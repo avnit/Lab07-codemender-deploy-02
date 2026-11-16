@@ -1,0 +1,199 @@
+# codemender-scan: produce CodeMender findings for one commit, write them to
+# Cloud Logging (log ID `codemender`), and stage the source tarball that the
+# sandbox job reads.
+#
+# CodeMender has no public API. mode=live calls a pluggable HTTP endpoint you
+# provide (secrets.CODEMENDER_API_URL / CODEMENDER_API_TOKEN). mode=mock reads
+# .codemender/mock-findings.json.
+#
+# Live endpoint contract (yours to implement):
+#   POST ${CODEMENDER_API_URL}
+#   Authorization: Bearer ${CODEMENDER_API_TOKEN}
+#   Content-Type: application/json
+#   Request:  {"repository": "owner/name", "commit_sha": "<40-hex>",
+#              "ref": "<git ref>", "source_uri": "gs://.../sources/...tar.gz"}
+#   Response: 200, {"session_id": "...", "findings": [ {<codemender fields>} ]}
+#   Each finding uses the fields in .codemender/mock-findings.json.
+#
+# Actions are pinned to major versions. For production, pin each action to a
+# full commit SHA (e.g. actions/checkout@<sha> # v4) and update with Dependabot.
+
+name: codemender-scan
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "mock reads .codemender/mock-findings.json; live calls CODEMENDER_API_URL"
+        type: choice
+        options:
+          - mock
+          - live
+        default: mock
+      commit_sha:
+        description: "Commit to scan (default: the commit this run was dispatched on)"
+        type: string
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: codemender-scan-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  SANDBOX_BUCKET: ${{ vars.SANDBOX_BUCKET }}
+  MODE: ${{ inputs.mode }}
+  INPUT_COMMIT_SHA: ${{ inputs.commit_sha }}
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve commit and staging paths
+        id: meta
+        run: |
+          set -euo pipefail
+          sha="${INPUT_COMMIT_SHA:-$GITHUB_SHA}"
+          if ! full_sha="$(git rev-parse --verify --quiet "${sha}^{commit}")"; then
+            echo "::error::commit_sha '${sha}' is not a commit in this repository"
+            exit 1
+          fi
+          if [ -z "${SANDBOX_BUCKET}" ] || [ -z "${GCP_PROJECT_ID}" ]; then
+            echo "::error::Set repository variables GCP_PROJECT_ID and SANDBOX_BUCKET"
+            exit 1
+          fi
+          owner="${GITHUB_REPOSITORY%%/*}"
+          name="${GITHUB_REPOSITORY#*/}"
+          source_uri="gs://${SANDBOX_BUCKET}/sources/${owner}__${name}/${full_sha}.tar.gz"
+          {
+            echo "commit_sha=${full_sha}"
+            echo "source_uri=${source_uri}"
+          } >> "$GITHUB_OUTPUT"
+          echo "Scanning ${GITHUB_REPOSITORY}@${full_sha} (mode=${MODE})"
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_EMAIL }}
+
+      - name: Set up gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Stage source tarball for the sandbox
+        env:
+          COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
+          SOURCE_URI: ${{ steps.meta.outputs.source_uri }}
+        run: |
+          set -euo pipefail
+          git archive --format=tar.gz -o "${RUNNER_TEMP}/source.tar.gz" "${COMMIT_SHA}"
+          gcloud storage cp "${RUNNER_TEMP}/source.tar.gz" "${SOURCE_URI}" --project "${GCP_PROJECT_ID}"
+          echo "Staged ${SOURCE_URI}"
+
+      - name: Get findings
+        id: findings
+        env:
+          COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
+          SOURCE_URI: ${{ steps.meta.outputs.source_uri }}
+          CODEMENDER_API_URL: ${{ secrets.CODEMENDER_API_URL }}
+          CODEMENDER_API_TOKEN: ${{ secrets.CODEMENDER_API_TOKEN }}
+        run: |
+          set -euo pipefail
+          raw="${RUNNER_TEMP}/raw-findings.json"
+          if [ "${MODE}" = "live" ]; then
+            if [ -z "${CODEMENDER_API_URL}" ] || [ -z "${CODEMENDER_API_TOKEN}" ]; then
+              echo "::error::mode=live needs secrets CODEMENDER_API_URL and CODEMENDER_API_TOKEN"
+              exit 1
+            fi
+            jq -n --arg repo "${GITHUB_REPOSITORY}" --arg sha "${COMMIT_SHA}" \
+                  --arg ref "${GITHUB_REF}" --arg src "${SOURCE_URI}" \
+                  '{repository: $repo, commit_sha: $sha, ref: $ref, source_uri: $src}' \
+                  > "${RUNNER_TEMP}/request.json"
+            curl --fail-with-body --silent --show-error --max-time 300 \
+              -X POST "${CODEMENDER_API_URL}" \
+              -H "Authorization: Bearer ${CODEMENDER_API_TOKEN}" \
+              -H "Content-Type: application/json" \
+              --data @"${RUNNER_TEMP}/request.json" \
+              -o "${raw}"
+          else
+            cp .codemender/mock-findings.json "${raw}"
+          fi
+          # Normalize: one session_id, current repository and commit on every finding.
+          jq --arg repo "${GITHUB_REPOSITORY}" --arg sha "${COMMIT_SHA}" '
+            (.session_id // ("cm-session-" + env.GITHUB_RUN_ID)) as $sid
+            | {session_id: $sid,
+               findings: [ (.findings // [])[]
+                 | . + {event_type: "CODEMENDER_FINDING", session_id: $sid,
+                        repository: $repo, commit_sha: $sha}
+                 | del(._comment) ]}
+          ' "${raw}" > "${RUNNER_TEMP}/findings.json"
+          echo "session_id=$(jq -r .session_id "${RUNNER_TEMP}/findings.json")" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq '.findings | length' "${RUNNER_TEMP}/findings.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Write CodeMender events to Cloud Logging
+        env:
+          COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
+          SESSION_ID: ${{ steps.findings.outputs.session_id }}
+          COUNT: ${{ steps.findings.outputs.count }}
+        run: |
+          set -euo pipefail
+          write_log() {
+            # $1 = Cloud Logging severity, $2 = single-line JSON payload
+            gcloud logging write codemender "$2" --payload-type=json \
+              --severity="$1" --project "${GCP_PROJECT_ID}"
+          }
+          base="$(jq -cn --arg repo "${GITHUB_REPOSITORY}" --arg sha "${COMMIT_SHA}" \
+                        --arg sid "${SESSION_ID}" \
+                        '{repository: $repo, commit_sha: $sha, session_id: $sid}')"
+
+          write_log INFO "$(jq -c --arg mode "${MODE}" \
+            '. + {event_type: "CODEMENDER_SCAN_STARTED", status: "STARTED",
+                  message: ("CodeMender scan started (mode=" + $mode + ")")}' <<< "${base}")"
+
+          jq -c '.findings[]' "${RUNNER_TEMP}/findings.json" | while IFS= read -r finding; do
+            sev="$(jq -r '
+              {"CRITICAL": "CRITICAL", "HIGH": "ERROR", "MEDIUM": "WARNING", "LOW": "NOTICE"} as $map
+              | $map[(.severity // "") | ascii_upcase] // "INFO"' <<< "${finding}")"
+            write_log "${sev}" "${finding}"
+            echo "Logged $(jq -r '.finding_id' <<< "${finding}") (${sev})"
+          done
+
+          write_log INFO "$(jq -c --argjson n "${COUNT}" \
+            '. + {event_type: "CODEMENDER_SCAN_COMPLETED", status: "COMPLETED",
+                  message: ("CodeMender scan completed: " + ($n|tostring) + " finding(s)")}' <<< "${base}")"
+
+      - name: Job summary
+        if: always()
+        env:
+          COMMIT_SHA: ${{ steps.meta.outputs.commit_sha }}
+          SOURCE_URI: ${{ steps.meta.outputs.source_uri }}
+          SESSION_ID: ${{ steps.findings.outputs.session_id }}
+        run: |
+          {
+            echo "## CodeMender scan (${MODE})"
+            echo ""
+            echo "- Repository: \`${GITHUB_REPOSITORY}\`"
+            echo "- Commit: \`${COMMIT_SHA}\`"
+            echo "- Session: \`${SESSION_ID}\`"
+            echo "- Source tarball: \`${SOURCE_URI}\`"
+            echo ""
+            if [ -f "${RUNNER_TEMP}/findings.json" ]; then
+              echo "| ID | Severity | CWE | File | Title | Wiz issue |"
+              echo "|---|---|---|---|---|---|"
+              jq -r '.findings[] | "| \(.finding_id) | \(.severity) | \(.cwe_id) | `\(.file_path):\(.line_number)` | \(.title) | \(.wiz_issue_id // "") |"' \
+                "${RUNNER_TEMP}/findings.json"
+            else
+              echo "No findings file was produced. Check the step logs."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
