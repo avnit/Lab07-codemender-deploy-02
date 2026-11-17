@@ -1,8 +1,0 @@
-# Files not uploaded by `gcloud builds submit`.
-.env
-.env.*
-!.env.example
-tests/
-egress-check/
-**/__pycache__
-**/*.pyc
