@@ -18,10 +18,41 @@ Lab07-codemender-deploy-02/
 │               └── verify_report_signature.py    # Local cryptographic OIDC JWT signature validator
 ├── codemender-mcp/                               # 18-tool FastMCP Cloud Run server (CodeMender, BQ, Logging, Wiz)
 ├── codemender-runner-mcp/                        # Isolated Cloud Run Job execution sandbox & Terraform modules
+├── deploy.sh                                     # One-command deploy of both Cloud Run services (gcloud only)
 ├── .gitallowed                                   # Allowed test patterns for pre-commit checks
 ├── .gitignore                                    # Ignores runtime assessment state, reports, and secrets
 └── README.md
 ```
+
+---
+
+## Deploying Both Cloud Run Services (`deploy.sh`)
+
+A single script at the repository root deploys both MCP servers and everything they depend on. It needs only `gcloud` and `bq` (no Terraform, no Docker), never prompts, and does **not** ask for a GitHub owner or repository: the target repository is an argument of the MCP tools.
+
+```bash
+gcloud config set project <PROJECT_ID>
+./deploy.sh
+```
+
+| Resource | Name | Source |
+| :--- | :--- | :--- |
+| Cloud Run service | `codemender-runner-mcp` | `codemender-runner-mcp/` (`docker/mcp.Dockerfile`) |
+| Cloud Run service | `codemender-mcp` | `codemender-mcp/` (`Dockerfile`) |
+| Cloud Run Job (sandbox both services dispatch to) | `codemender-runner` | `codemender-runner-mcp/` (`cloudbuild.yaml`) |
+| Shared | Artifact Registry `codemender-runner`, bucket `codemender-reports-<project>`, BigQuery dataset `codemender` | created if missing |
+
+Common variations:
+
+```bash
+./deploy.sh --only mcp                      # only codemender-mcp
+./deploy.sh --only runner-mcp               # only codemender-runner-mcp
+./deploy.sh --skip-runner-job               # services only; the job already exists
+GITHUB_TOKEN=<token> ./deploy.sh            # optional: private repos + fix PRs (stored in Secret Manager)
+./deploy.sh --allow-unauthenticated         # public URLs (default is IAM-only, roles/run.invoker)
+```
+
+Wiz settings (`WIZ_CLIENT_ID`, `WIZ_CLIENT_SECRET`, `WIZ_API_ENDPOINT`) and the other optional values are read from the environment or from `codemender-mcp/.env`; run `./deploy.sh --help` for the full list. The script is idempotent: re-running it rebuilds only images whose source changed.
 
 ---
 
