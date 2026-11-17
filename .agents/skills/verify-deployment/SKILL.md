@@ -1,16 +1,16 @@
 ---
 name: verify-deployment
-description: Strictly on-demand verification and assessment skill. Evaluates and grades student completion of incremental goals for [8] Capstone Project ONLY when the student explicitly requests grading, verification, or scoring. NEVER invoke automatically after deployment, terraform, or configuration steps.
+description: Strictly on-demand verification and assessment skill. Evaluates and grades student completion of incremental goals for [7] Using AI for Sec Ops - Creating your Sec Agent Lab  ONLY when the student explicitly requests grading, verification, or scoring. NEVER invoke automatically after deployment, terraform, or configuration steps.
 ---
 
-# [8] Capstone Project - Financial Companion Goal-Based Verification & Assessment Skill (`lab_8`)
+# [7] Using AI for Sec Ops - Creating your Sec Agent Lab Skill (`lab_7`)
 
 Use this skill whenever a student asks to **verify their progress**, **assess/grade a completed lab goal**, or **submit their goal report (`assessment_report_<goal_id>.md`)** for **[8] Capstone Project - Architecting Security & Governance For Financial Companion** (`lab_8`) to the Web Assessor application.
 
-## Lab & Curriculum Association (Lab 8)
-- **Target Lab**: `[8] Capstone Project - Architecting Security & Governance For Financial Companion` (`lab_8` / `lab-08-capstone-financial-companion`)
+## Lab & Curriculum Association (Lab 7)
+- **Target Lab**: `[7] Using AI for Sec Ops ` (`lab_7` / `lab-07-capstone-financial-companion`)
 - **Structure**: **Labs contain Goals. Goals contain Steps.**
-- Every goal evaluated by this skill (`goal-1-environment-setup`, `goal-2-otel-instrumentation`, `goal-3-agent-identities`, `goal-4-agent-gateway`, `goal-5-agent-evals`, `goal-n-remediate-app-vulnerabilities`) belongs to **Lab 8** and reports under `lab_8` in the Web Assessor Application (WAA).
+- Every goal evaluated by this skill (`goal-1-environment-setup`, `goal-2-otel-instrumentation`, `goal-3-agent-identities`, `goal-4-agent-gateway`, `goal-5-agent-evals`, `goal-n-remediate-app-vulnerabilities`) belongs to **Lab 7** and reports under `lab_8` in the Web Assessor Application (WAA).
 
 ## Mandatory Operating Rules for the Grading Skill & Antigravity
 
