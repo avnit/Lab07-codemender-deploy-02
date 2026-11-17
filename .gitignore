@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+venv/
+
+# Assessment runtime state & student reports (never commit student state or keys)
+.assessment_state.json
+**/.assessment_state.json
+assessment_report*.md
+*.log
+
+# OS & Editor
+.DS_Store
+.idea/
+.vscode/
