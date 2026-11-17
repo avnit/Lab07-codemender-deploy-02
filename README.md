@@ -1,64 +1,64 @@
-# SEC L400 Capstone Grading & Verification Skills (`l400-capstone-skills`)
+# [7] Using AI for Sec Ops — Security Agent Lab & Grading Skill (`lab_7`)
 
-Centralized distribution repository for the **Financial Companion Capstone Verification & Grading Skill** (`verify-deployment`).
-
-This repository maintains the authoritative, version-controlled implementation of the grading skill, verification scripts, scoring rubrics, and cryptographic attestation pipeline. Updates published here can be pulled and synced to any lab environment or grading runner on other computers.
+Authoritative repository for **[7] Using AI for Sec Ops - Creating your Sec Agent Lab** (*Wiz & CodeMender MCP · Security Agent Lab*), containing the **CodeMender Security MCP Server**, **CodeMender Ephemeral Runner**, and the on-demand **Goal-Based Verification & Grading Skill** (`verify-deployment`).
 
 ---
 
 ## Directory Structure
 
 ```text
-capstone-skills/
+Lab07-codemender-deploy-02/
 ├── .agents/
 │   └── skills/
 │       └── verify-deployment/
-│           ├── SKILL.md                          # Skill definition, prompt rules & goal rubrics
+│           ├── SKILL.md                          # Lab 7 grading skill rules & 5-goal rubrics
 │           └── scripts/
-│               ├── verify_environment.py         # Main verification engine & Web Assessor client
-│               └── verify_report_signature.py    # Local cryptographic signature validator
+│               ├── verify_environment.py         # Main Lab 7 verification engine & Web Assessor client
+│               ├── verify_lab.py                 # CLI alias entrypoint for verify_environment.py
+│               └── verify_report_signature.py    # Local cryptographic OIDC JWT signature validator
+├── codemender-mcp/                               # 18-tool FastMCP Cloud Run server (CodeMender, BQ, Logging, Wiz)
+├── codemender-runner-mcp/                        # Isolated Cloud Run Job execution sandbox & Terraform modules
 ├── .gitallowed                                   # Allowed test patterns for pre-commit checks
-├── .gitignore                                    # Ignores runtime state, reports, and logs
+├── .gitignore                                    # Ignores runtime assessment state, reports, and secrets
 └── README.md
 ```
 
 ---
 
-## Supported Lab Goals
+## Supported Lab 7 Goals (`--list-goals`)
 
 | Goal Identifier | Description | Total Points | Rubric Steps |
 | :--- | :--- | :---: | :--- |
-| `goal-1-environment-setup` | **Goal 1: Baseline Agentic Environment Setup** | 100 pts | Base Infrastructure (25 pts), Vertex AI Engines (25 pts), Cloud Run & Web UI (20 pts), Multi-Agent E2E (30 pts) |
-| `goal-2-otel-instrumentation` | **Goal 2: OpenTelemetry Traces, Logs & Metrics** | 100 pts | Telemetry APIs & IAM (20 pts), Agent Engine Env Vars (30 pts), Live Traces & Logs (25 pts), Cloud Monitoring Histograms (25 pts) |
-| `goal-n-remediate-app-vulnerabilities` | **Goal N: Remediate App Vulnerabilities (SAST)** | 100 pts | Client-side eval & XSS (30 pts), Hardcoded keys & JWT bypass (30 pts), SQL Injection (30 pts), Unit tests (10 pts) |
+| `goal-1-target-app-deployment` | **Goal 1: Deploy Vulnerable Target App & GitHub Branch Protection** | 100 pts | GCP APIs & Build IAM (20 pts), `watchlist` Multi-Container Cloud Run (30 pts), Live `CM-0001`/`CM-0002` Baseline (25 pts), GitHub Repo & `main` Protection (25 pts) |
+| `goal-2-codemender-mcp-deployment` | **Goal 2: Deploy CodeMender MCP Server, Runner Sandbox & Seed BigQuery** | 100 pts | BQ Dataset, GCS Bucket & IAM (25 pts), `codemender-mcp-server` & `codemender-runner` (25 pts), GE Transport & 18 Tools (25 pts), Seeded Findings & SQL Guardrail (25 pts) |
+| `goal-3-enterprise-mcp-connectors` | **Goal 3: Configure Wiz, GitHub & Cloud Logging MCP Connectors** | 100 pts | Wiz Onboarding & Secrets (25 pts), GitHub PAT & GE Custom MCP Org Policy (25 pts), Cloud Logging Remote MCP (25 pts), Seeded `logs/codemender` Correlation (25 pts) |
+| `goal-4-hitl-remediation` | **Goal 4: Human-in-the-Loop Remediation & Sandbox Verification (`CM-0001`)** | 100 pts | Remediation Branch & PR (30 pts), Parameterized SQL Fix in `app/db.py` (30 pts), Sandbox Validation Audit Trail (25 pts), Human Merge Guardrail (15 pts) |
+| `goal-5-cloud-armor-protection` | **Goal 5: Cloud Armor WAF & Ingress Lockdown (`watchlist`)** | 100 pts | Cloud Run LB Ingress & IaC (25 pts), Cloud Armor Default Deny & SQLi/LFI WAF (25 pts), Serverless NEG & External ALB (25 pts), Live `403` Blocking & Log Audit (25 pts) |
 
 ---
 
-## How to Sync to Another Grading Environment
+## Running Goal Verification (On-Demand Only)
 
-To incorporate the latest grading skill updates into a lab repository or separate grading machine:
-
-### Option A: Sync into an existing lab repository
 ```bash
-# Clone or pull the latest skills repo
-git clone https://github.com/hgdg7/l400-capstone-skills.git /path/to/capstone-skills
+# Inspect all registered Lab 7 goals and their completion status
+python3 .agents/skills/verify-deployment/scripts/verify_environment.py --list-goals
 
-# Copy or sync the .agents directory into your target workspace
-cp -r /path/to/capstone-skills/.agents /path/to/finance-companion-baseline/
-```
+# Evaluate the next uncompleted goal (reads ~/lab.env and .assessment_state.json automatically)
+python3 .agents/skills/verify-deployment/scripts/verify_environment.py
 
-### Option B: Run directly against a target environment
-```bash
+# Explicitly evaluate a specific goal and submit to the Web Assessor Application (WAA)
 python3 .agents/skills/verify-deployment/scripts/verify_environment.py \
-  --project-id <TARGET_GCP_PROJECT_ID> \
-  --goal goal-2-otel-instrumentation
+  --goal goal-1-target-app-deployment \
+  --github-org "<GITHUB_USERNAME_OR_ORG>" \
+  --submit-url "<WEB_ASSESSOR_URL>/api/v1/submissions" \
+  --enrollment-key "<COHORT_ENROLLMENT_KEY>"
 ```
 
 ---
 
 ## Key Features
 
-1. **Sequential Goal Progression**: Automatically skips previously completed goals unless `--force` is specified.
-2. **Cohort Key Persistence**: Prompts once for the cohort enrollment key, saves it locally in `.assessment_state.json` (gitignored), and automatically reuses it on subsequent runs.
-3. **Cryptographic Anti-Cheat Attestation**: Generates a canonical JSON payload, calculates `SHA-256`, and mints an asymmetric `RS256` Google IAM OIDC token binding the student, project, score, and payload digest.
-4. **Dual-Gate Web Assessor Push**: Optionally pushes attested Markdown reports and structured payloads directly to the Web Assessor endpoint via `--submit-url`.
+1. **Strict On-Demand & Read-Only Policy**: Never runs automatically after deployments and never mutates workspace files, GitHub repos, or GCP resources.
+2. **Sequential Goal Progression**: Automatically evaluates the next uncompleted goal so later hardening steps (e.g., Goal 5 Cloud Armor lockdown) never invalidate Goal 1 baseline scores.
+3. **Cohort Key & Lab Context Persistence**: Prompts once for the Cohort Enrollment Key, remembers it alongside `project_id`, `region`, and `github_org` in `.assessment_state.json` (gitignored), and never embeds secret payloads in reports.
+4. **Cryptographic Anti-Cheat Attestation**: Computes `SHA-256` over the canonical assessment JSON payload and mints an asymmetric `RS256` Google IAM OIDC JWT binding the student identity, GCP project, `lab_7`, `goal_id`, and score.

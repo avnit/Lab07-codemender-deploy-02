@@ -1,18 +1,18 @@
 #!/usr/bin/env python3
 """
-Cryptographic Verifier for `assessment_report.md` (For LLM Assessor & Grading Backend)
+Cryptographic Verifier for `assessment_report_<goal_id>.md` (For LLM Assessor & Grading Backend)
 
 Verifies that:
-  1. The `assessment_report.md` file contains both the Canonical Assessment JSON block
+  1. The `assessment_report_<goal_id>.md` file contains both the Canonical Assessment JSON block
      and the Google-signed RS256 OIDC JWT (`id_token`).
   2. Re-serializing the Canonical Assessment JSON block (`sort_keys=True, separators=(',', ':')`)
      produces the exact `sha256` digest claimed in the Google-signed JWT's `aud` parameter.
   3. The JWT's `RS256` signature and `kid` match Google's active OIDC signing certificates
      (`https://www.googleapis.com/oauth2/v3/certs` & `https://oauth2.googleapis.com/tokeninfo`),
      confirming it was minted by Google Cloud IAM Credentials API (`iss: https://accounts.google.com`)
-     for `sa-financial-assistant@<project_id>.iam.gserviceaccount.com`.
-  4. The `project`, `principal`, `student`, and `score` inside the signed JWT `aud` claim match
-     the canonical JSON payload (preventing a student from modifying their name, project ID, or score).
+     for an active service account in `<project_id>` (such as `codemender-mcp-sa@<project_id>.iam.gserviceaccount.com`).
+  4. The `project`, `principal`, `student`, `lab`, `goal`, and `score` inside the signed JWT `aud` claim
+     match the canonical JSON payload (preventing tampering with student identity, project ID, or score).
 """
 
 import argparse
@@ -152,9 +152,16 @@ def verify_markdown_report(md_path: Path, expected_student: str = "", expected_p
     )
     jwt_email = str(jwt_payload.get("email", ""))
     expected_sa_suffix = f"@{payload_project}.iam.gserviceaccount.com"
-    signer_matches_project = jwt_email.endswith(expected_sa_suffix) and (
-        not signed_signer or jwt_email == signed_signer
+    payload_proj_num = str(payload_obj.get("project", {}).get("project_number", ""))
+    compute_sa_email = (
+        f"{payload_proj_num}-compute@developer.gserviceaccount.com"
+        if payload_proj_num and payload_proj_num != "unknown"
+        else ""
     )
+    signer_matches_project = (
+        jwt_email.endswith(expected_sa_suffix)
+        or (bool(compute_sa_email) and jwt_email == compute_sa_email)
+    ) and (not signed_signer or jwt_email == signed_signer)
 
     checks = {
         "sha256_matches_signed_jwt": recomputed_sha256 == signed_sha256,
