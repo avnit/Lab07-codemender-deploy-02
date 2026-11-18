@@ -19,7 +19,6 @@ Lab07-codemender-deploy-02/
 ├── codemender-mcp/                               # 18-tool FastMCP Cloud Run server (CodeMender, BQ, Logging, Wiz)
 ├── codemender-runner-mcp/                        # Isolated Cloud Run Job execution sandbox & Terraform modules
 ├── deploy.sh                                     # One-command deploy of both Cloud Run services (gcloud only)
-├── .gitallowed                                   # Allowed test patterns for pre-commit checks
 ├── .gitignore                                    # Ignores runtime assessment state, reports, and secrets
 └── README.md
 ```
