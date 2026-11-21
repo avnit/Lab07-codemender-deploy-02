@@ -62,12 +62,14 @@ def list_codemender_issues(
     """List and filter security issues/findings published by Code Mender in BigQuery.
 
     Args:
-        severity: Filter by severity (e.g. 'CRITICAL', 'HIGH', 'MEDIUM', 'LOW').
-        status: Filter by status (e.g. 'DETECTED', 'OPEN', 'PATCH_GENERATED', 'VERIFIED', 'APPLIED', 'FIXED', 'FAILED').
-        repository: Filter by code repository name or substring.
-        vulnerability_type: Filter by vulnerability name or CWE (e.g. 'SQL_INJECTION', 'CWE-79').
-        session_id: Filter by Code Mender session or run ID.
-        search_query: Text search across title, description, or file path.
+        severity: Filter by severity. Findings written by cm_find carry the SARIF level
+            ('ERROR', 'WARNING', 'NOTE').
+        status: Filter by status ('OPEN', 'VERIFIED', 'FALSE_POSITIVE', 'INCONCLUSIVE', 'FIXED', 'PATCHED').
+            VERIFIED means the finding was confirmed exploitable, not that it was fixed.
+        repository: Filter by code repository name or substring (column `repo`).
+        vulnerability_type: Filter by rule ID, vulnerability name or CWE (column `rule_id`).
+        session_id: Filter by the scan job ID that produced the findings (column `scan_job_id`).
+        search_query: Text search across message, file path, or rule ID.
         start_date: Filter for findings created on or after this ISO date/timestamp (e.g. '2026-09-01').
         end_date: Filter for findings created on or before this ISO date/timestamp.
         limit: Max number of findings to return (default: 25, max: 200).
@@ -119,8 +121,9 @@ def get_issues_summary(
 ) -> Dict[str, Any]:
     """Get aggregated metrics and statistics on Code Mender findings.
 
-    Returns total issues, open vs resolved counts, breakdown by severity,
-    and top 5 most frequent vulnerability types within the specified period.
+    Returns total issues, open vs resolved counts (resolved = FIXED or PATCHED),
+    a breakdown by every severity value present, and the top 5 most frequent
+    rule IDs / vulnerability types within the specified period.
 
     Args:
         repository: Optional repository filter.

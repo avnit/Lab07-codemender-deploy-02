@@ -62,9 +62,12 @@ Launch repository vulnerability scans, exploitability verification, and automate
 - **`cm_get_finding`**: Get full finding details including vulnerability fingerprint, CWE/OWASP metadata, unified diff patch, verification verdict, and PR link.
 
 ### 2. BigQuery Inspection (Code Mender Findings)
-- **`list_codemender_issues`**: Query and filter security issues published by Code Mender. Filter by severity (`CRITICAL`, `HIGH`, etc.), status (`DETECTED`, `PATCH_GENERATED`, `VERIFIED`, `FIXED`, `FAILED`), repository, vulnerability type / CWE, date range, or text search.
+- **`list_codemender_issues`**: Query and filter security issues published by Code Mender. Filter by severity (the SARIF level `cm_find` stores: `ERROR`, `WARNING`, `NOTE`), status (`OPEN`, `VERIFIED`, `FALSE_POSITIVE`, `INCONCLUSIVE`, `FIXED`, `PATCHED`), repository (`repo`), rule ID / vulnerability type (`rule_id`), scan job (`scan_job_id`), date range, or text search over `message`, `file_path` and `rule_id`.
 - **`get_issue_details`**: Fetch full details for a specific issue ID / finding ID, including code snippets, generated patches / diffs, verification results, and remediation status.
 - **`get_issues_summary`**: High-level aggregated statistics: total findings, open vs. resolved counts, severity breakdown, and top 5 recurring vulnerabilities.
+
+These tools read the `findings` table that `cm_find` writes (schema: `FINDING_SCHEMA` in `services/runner/store.py`). Column names are resolved from the live table, so a table using the older issue-style names (`issue_id`, `repository`, `vulnerability_type`, `cwe_id`, `session_id`, `title`, `description`) is also readable. `VERIFIED` means a finding was confirmed exploitable; only `FIXED` and `PATCHED` count as resolved.
+
 - **`get_bigquery_schema`**: Inspect BigQuery table schemas, columns, types, and descriptions to guide custom queries.
 - **`query_codemender_bigquery`**: Execute safe, parameterized, read-only SQL queries (`SELECT` and `WITH` statements only).
 
