@@ -396,7 +396,7 @@ Then point your local MCP client to `http://localhost:8080/sse` (or `http://loca
 
 ## 7. Running Local Development & Unit Tests
 
-To run the test suite locally (290 unit tests covering SARIF parsing, git snapshotting, BigQuery store, and FastMCP HTTP routes):
+To run the test suite locally (302 unit tests covering SARIF parsing, git snapshotting, BigQuery store, and FastMCP HTTP routes):
 
 ```bash
 python3 -m venv .venv

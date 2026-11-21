@@ -62,8 +62,7 @@ def list_codemender_issues(
     """List and filter security issues/findings published by Code Mender in BigQuery.
 
     Args:
-        severity: Filter by severity. Findings written by cm_find carry the SARIF level
-            ('ERROR', 'WARNING', 'NOTE').
+        severity: Filter by severity ('CRITICAL', 'HIGH', 'MEDIUM', 'LOW').
         status: Filter by status ('OPEN', 'VERIFIED', 'FALSE_POSITIVE', 'INCONCLUSIVE', 'FIXED', 'PATCHED').
             VERIFIED means the finding was confirmed exploitable, not that it was fixed.
         repository: Filter by code repository name or substring (column `repo`).
@@ -122,8 +121,8 @@ def get_issues_summary(
     """Get aggregated metrics and statistics on Code Mender findings.
 
     Returns total issues, open vs resolved counts (resolved = FIXED or PATCHED),
-    a breakdown by every severity value present, and the top 5 most frequent
-    rule IDs / vulnerability types within the specified period.
+    a breakdown by severity (CRITICAL / HIGH / MEDIUM / LOW), and the top 5 most
+    frequent rule IDs / vulnerability types within the specified period.
 
     Args:
         repository: Optional repository filter.

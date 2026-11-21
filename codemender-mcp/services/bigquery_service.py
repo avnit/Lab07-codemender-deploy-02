@@ -9,6 +9,7 @@ from google.cloud.exceptions import NotFound, GoogleCloudError
 
 from config import settings
 from services.runner.store import FINDING_SCHEMA
+from services.severity import LEVEL_TO_SEVERITY, SEVERITIES, normalize_severity, severity_sql
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,6 @@ FIELD_COLUMNS: Dict[str, Tuple[str, ...]] = {
 # writes, VERIFIED means "confirmed exploitable", so it counts as open.
 RESOLVED_STATUSES = ("FIXED", "PATCHED", "APPLIED")
 NOT_OPEN_STATUSES = RESOLVED_STATUSES + ("FALSE_POSITIVE",)
-STANDARD_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW")
 
 
 class SchemaMismatchError(ValueError):
@@ -58,6 +58,20 @@ def serialize_bq_val(val: Any) -> Any:
 def serialize_row(row: bigquery.Row) -> Dict[str, Any]:
     """Convert a BigQuery Row to a serializable dictionary."""
     return {key: serialize_bq_val(val) for key, val in row.items()}
+
+
+def serialize_finding(row: bigquery.Row) -> Dict[str, Any]:
+    """Serialize a findings row with `severity` as CRITICAL / HIGH / MEDIUM / LOW.
+
+    Rows ingested before the mapping existed hold the raw SARIF level. Those are
+    mapped here and the stored value is kept under `sarif_level`.
+    """
+    data = serialize_row(row)
+    stored = data.get("severity")
+    if isinstance(stored, str) and stored.strip().upper() in LEVEL_TO_SEVERITY:
+        data["sarif_level"] = stored
+        data["severity"] = normalize_severity(stored)
+    return data
 
 
 class BigQueryService:
@@ -174,8 +188,8 @@ class BigQueryService:
         """List Code Mender issues from BigQuery with flexible filtering.
 
         Args:
-            severity: Filter by severity. Findings from `cm_find` carry the SARIF level
-                (ERROR, WARNING, NOTE); other tables may use CRITICAL, HIGH, MEDIUM, LOW.
+            severity: Filter by severity (CRITICAL, HIGH, MEDIUM, LOW). A SARIF level
+                (ERROR, WARNING, NOTE) is accepted and mapped to HIGH, MEDIUM, LOW.
             status: Filter by status (OPEN, VERIFIED, FALSE_POSITIVE, INCONCLUSIVE, FIXED, PATCHED).
             repository: Filter by repository name or path (column `repo`).
             vulnerability_type: Filter by rule ID / vulnerability type / CWE (column `rule_id`).
@@ -210,8 +224,9 @@ class BigQueryService:
             return {"error": str(e)}
 
         if severity:
-            where_clauses.append("UPPER(CAST(severity AS STRING)) = UPPER(@severity)")
-            query_params.append(bigquery.ScalarQueryParameter("severity", "STRING", severity))
+            where_clauses.append(f"{severity_sql()} = @severity")
+            query_params.append(
+                bigquery.ScalarQueryParameter("severity", "STRING", normalize_severity(severity)))
 
         if status:
             where_clauses.append("UPPER(CAST(status AS STRING)) = UPPER(@status)")
@@ -273,7 +288,7 @@ class BigQueryService:
             # Execute data query
             data_job_config = bigquery.QueryJobConfig(query_parameters=query_params_with_paging)
             data_job = self.client.query(data_sql, job_config=data_job_config)
-            rows = [serialize_row(row) for row in data_job.result()]
+            rows = [serialize_finding(row) for row in data_job.result()]
 
             return {
                 "total_issues": total_count,
@@ -325,7 +340,7 @@ class BigQueryService:
             results = list(job.result())
             if not results:
                 return {"error": f"Issue with ID '{issue_id}' not found in {target_table}."}
-            return serialize_row(results[0])
+            return serialize_finding(results[0])
         except NotFound:
             return {"error": f"Table {target_table} does not exist."}
         except Exception as e:
@@ -377,11 +392,11 @@ class BigQueryService:
                 (SELECT COUNTIF(UPPER(IFNULL(CAST(status AS STRING), 'OPEN')) NOT IN ({not_open_sql})) FROM base) AS open_count
         """
 
-        # Severity values differ by producer (cm_find stores the SARIF level:
-        # ERROR / WARNING / NOTE), so count whatever is present.
-        severity_sql = f"""
+        # Rows stored with a raw SARIF level (ERROR / WARNING / NOTE) are counted
+        # under the severity they map to.
+        severity_counts_sql = f"""
             SELECT
-                UPPER(IFNULL(NULLIF(CAST(severity AS STRING), ''), 'UNKNOWN')) AS severity,
+                IFNULL(NULLIF({severity_sql()}, ''), 'UNKNOWN') AS severity,
                 COUNT(*) AS count
             FROM {target_table}
             {where_sql}
@@ -405,10 +420,10 @@ class BigQueryService:
             if not summary_res_list:
                 return {"error": "No data returned for summary."}
             summary_res = summary_res_list[0]
-            severity_res = list(self.client.query(severity_sql, job_config=job_config).result())
+            severity_res = list(self.client.query(severity_counts_sql, job_config=job_config).result())
             top_vulns_res = list(self.client.query(top_vulns_sql, job_config=job_config).result())
 
-            severity_breakdown: Dict[str, int] = {sev: 0 for sev in STANDARD_SEVERITIES}
+            severity_breakdown: Dict[str, int] = {sev: 0 for sev in SEVERITIES}
             for row in severity_res:
                 severity_breakdown[str(row["severity"])] = int(row["count"])
 

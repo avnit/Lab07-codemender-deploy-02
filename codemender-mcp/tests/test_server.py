@@ -129,12 +129,12 @@ class TestBigQueryService(unittest.TestCase):
         self._assert_only_known_columns(sql, FINDING_SCHEMA)
         self.assertIn("CAST(finding_id AS STRING) = @issue_id", sql)
 
-    def test_summary_matches_cm_find_severity_and_status_values(self):
+    def test_summary_matches_cm_find_columns_and_status_values(self):
         service, client = self._service_with_columns(FINDING_SCHEMA)
         totals, severities, top = MagicMock(), MagicMock(), MagicMock()
         totals.result.return_value = [{"total_issues": 3, "resolved_count": 1, "open_count": 2}]
         severities.result.return_value = [
-            {"severity": "ERROR", "count": 2}, {"severity": "WARNING", "count": 1}]
+            {"severity": "HIGH", "count": 2}, {"severity": "MEDIUM", "count": 1}]
         top.result.return_value = [{"vuln_type": "py/sql-injection", "count": 2}]
         client.query.side_effect = [totals, severities, top]
 
@@ -142,9 +142,8 @@ class TestBigQueryService(unittest.TestCase):
 
         self.assertNotIn("error", res)
         self.assertEqual(res["total_issues"], 3)
-        self.assertEqual(res["severity_breakdown"]["ERROR"], 2)
-        self.assertEqual(res["severity_breakdown"]["WARNING"], 1)
-        self.assertEqual(res["severity_breakdown"]["HIGH"], 0)
+        self.assertEqual(res["severity_breakdown"],
+                         {"CRITICAL": 0, "HIGH": 2, "MEDIUM": 1, "LOW": 0})
         self.assertEqual(res["top_vulnerabilities"], [{"type": "py/sql-injection", "count": 2}])
         summary_sql, _, top_sql = self._sql(client)
         for sql in self._sql(client):
