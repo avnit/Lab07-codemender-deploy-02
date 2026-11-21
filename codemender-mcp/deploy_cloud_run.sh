@@ -45,14 +45,6 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
 GITHUB_SECRET_NAME="${GITHUB_SECRET_NAME:-github-token}"
 
-# Wiz (optional). WIZ_CLIENT_SECRET is stored in Secret Manager, never as a plain env var.
-WIZ_CLIENT_ID="${WIZ_CLIENT_ID:-}"
-WIZ_CLIENT_SECRET="${WIZ_CLIENT_SECRET:-}"
-WIZ_API_ENDPOINT="${WIZ_API_ENDPOINT:-}"
-WIZ_AUTH_URL="${WIZ_AUTH_URL:-https://auth.app.wiz.io/oauth/token}"
-WIZ_AUDIENCE="${WIZ_AUDIENCE:-wiz-api}"
-WIZ_SECRET_NAME="${WIZ_SECRET_NAME:-wiz-client-secret}"
-
 print_usage() {
   echo "Usage: $0 [OPTIONS]"
   echo ""
@@ -68,8 +60,7 @@ print_usage() {
   echo ""
   echo "Settings are read from .env (see .env.example); override the path with ENV_FILE."
   echo "Environment variables: PROJECT_ID/GCP_PROJECT_ID, REGION, SERVICE_NAME, BQ_DATASET, BQ_TABLE, LOG_NAME_FILTER,"
-  echo "  BUILD_SERVICE_ACCOUNT, ALLOW_UNAUTHENTICATED, WIZ_CLIENT_ID, WIZ_CLIENT_SECRET, WIZ_API_ENDPOINT,"
-  echo "  WIZ_AUTH_URL, WIZ_AUDIENCE, WIZ_SECRET_NAME"
+  echo "  BUILD_SERVICE_ACCOUNT, ALLOW_UNAUTHENTICATED, GITHUB_TOKEN, GITHUB_SECRET_NAME"
 }
 
 # Parse command line arguments
@@ -130,11 +121,6 @@ echo -e "  Region:               ${BOLD}${REGION}${RESET}"
 echo -e "  Cloud Run Service:    ${BOLD}${SERVICE_NAME}${RESET}"
 echo -e "  BigQuery Dataset:     ${BOLD}${BQ_DATASET}${RESET}"
 echo -e "  BigQuery Table:       ${BOLD}${BQ_TABLE}${RESET}"
-if [[ -n "${WIZ_CLIENT_ID}" && -n "${WIZ_CLIENT_SECRET}" && -n "${WIZ_API_ENDPOINT}" ]]; then
-  echo -e "  Wiz Integration:      ${BOLD}enabled (${WIZ_API_ENDPOINT})${RESET}"
-else
-  echo -e "  Wiz Integration:      ${BOLD}disabled (set WIZ_* values in .env to enable)${RESET}"
-fi
 echo -e "  Allow Public Access:  ${BOLD}${ALLOW_UNAUTHENTICATED}${RESET}"
 echo -e "${BLUE}${BOLD}============================================================${RESET}"
 echo ""
@@ -207,42 +193,6 @@ if [[ -n "${CM_REPORTS_BUCKET}" ]]; then
 fi
 
 SECRETS=()
-
-# Wiz: store the client secret in Secret Manager and mount it as WIZ_CLIENT_SECRET
-if [[ -n "${WIZ_CLIENT_ID}" && -n "${WIZ_CLIENT_SECRET}" && -n "${WIZ_API_ENDPOINT}" ]]; then
-  echo -e "${YELLOW}==> Configuring Wiz integration (Secret Manager: ${WIZ_SECRET_NAME})...${RESET}"
-  gcloud services enable secretmanager.googleapis.com --project="${PROJECT_ID}"
-
-  if ! gcloud secrets describe "${WIZ_SECRET_NAME}" --project="${PROJECT_ID}" >/dev/null 2>&1; then
-    printf '%s' "${WIZ_CLIENT_SECRET}" | gcloud secrets create "${WIZ_SECRET_NAME}" \
-      --data-file=- \
-      --replication-policy=automatic \
-      --project="${PROJECT_ID}" >/dev/null
-    echo -e "${GREEN}    Created secret ${WIZ_SECRET_NAME}.${RESET}"
-  else
-    CURRENT_SECRET=$(gcloud secrets versions access latest --secret="${WIZ_SECRET_NAME}" --project="${PROJECT_ID}" 2>/dev/null || echo "")
-    if [[ "${CURRENT_SECRET}" != "${WIZ_CLIENT_SECRET}" ]]; then
-      printf '%s' "${WIZ_CLIENT_SECRET}" | gcloud secrets versions add "${WIZ_SECRET_NAME}" \
-        --data-file=- \
-        --project="${PROJECT_ID}" >/dev/null
-      echo -e "${GREEN}    Added new version of secret ${WIZ_SECRET_NAME}.${RESET}"
-    else
-      echo "    Secret ${WIZ_SECRET_NAME} is already up to date."
-    fi
-    unset CURRENT_SECRET
-  fi
-
-  gcloud secrets add-iam-policy-binding "${WIZ_SECRET_NAME}" \
-    --member="serviceAccount:${SA_EMAIL}" \
-    --role="roles/secretmanager.secretAccessor" \
-    --project="${PROJECT_ID}" \
-    --quiet >/dev/null
-
-  ENV_VARS="${ENV_VARS},WIZ_CLIENT_ID=${WIZ_CLIENT_ID},WIZ_API_ENDPOINT=${WIZ_API_ENDPOINT},WIZ_AUTH_URL=${WIZ_AUTH_URL},WIZ_AUDIENCE=${WIZ_AUDIENCE}"
-  SECRETS+=("WIZ_CLIENT_SECRET=${WIZ_SECRET_NAME}:latest")
-else
-  echo "    Wiz integration not configured; skipping Wiz setup."
-fi
 
 # GitHub Token for Code Mender auto-fix PRs and repo cloning
 if [[ -n "${GITHUB_TOKEN}" ]]; then

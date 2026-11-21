@@ -16,7 +16,7 @@ Lab07-codemender-deploy-02/
 │               ├── verify_environment.py         # Main Lab 7 verification engine & Web Assessor client
 │               ├── verify_lab.py                 # CLI alias entrypoint for verify_environment.py
 │               └── verify_report_signature.py    # Local cryptographic OIDC JWT signature validator
-├── codemender-mcp/                               # 18-tool FastMCP Cloud Run server (CodeMender, BQ, Logging, Wiz)
+├── codemender-mcp/                               # 14-tool FastMCP Cloud Run server (CodeMender, BQ, Logging)
 ├── codemender-runner-mcp/                        # Isolated Cloud Run Job execution sandbox & Terraform modules
 ├── deploy.sh                                     # One-command deploy of both Cloud Run services (gcloud only)
 ├── .gitignore                                    # Ignores runtime assessment state, reports, and secrets
@@ -51,7 +51,7 @@ GITHUB_TOKEN=<token> ./deploy.sh            # optional: private repos + fix PRs 
 ./deploy.sh --allow-unauthenticated         # public URLs (default is IAM-only, roles/run.invoker)
 ```
 
-Wiz settings (`WIZ_CLIENT_ID`, `WIZ_CLIENT_SECRET`, `WIZ_API_ENDPOINT`) and the other optional values are read from the environment or from `codemender-mcp/.env`; run `./deploy.sh --help` for the full list. The script is idempotent: re-running it rebuilds only images whose source changed.
+Optional values are read from the environment or from `codemender-mcp/.env`; run `./deploy.sh --help` for the full list. The script is idempotent: re-running it rebuilds only images whose source changed.
 
 ---
 
@@ -60,7 +60,7 @@ Wiz settings (`WIZ_CLIENT_ID`, `WIZ_CLIENT_SECRET`, `WIZ_API_ENDPOINT`) and the 
 | Goal Identifier | Description | Total Points | Rubric Steps |
 | :--- | :--- | :---: | :--- |
 | `goal-1-target-app-deployment` | **Goal 1: Deploy Vulnerable Target App & GitHub Branch Protection** | 100 pts | GCP APIs & Build IAM (20 pts), `watchlist` Multi-Container Cloud Run (30 pts), Live `CM-0001`/`CM-0002` Baseline (25 pts), GitHub Repo & `main` Protection (25 pts) |
-| `goal-2-codemender-mcp-deployment` | **Goal 2: Deploy CodeMender MCP Server, Runner Sandbox & Seed BigQuery** | 100 pts | BQ Dataset, GCS Bucket & IAM (25 pts), `codemender-mcp-server` & `codemender-runner` (25 pts), GE Transport & 18 Tools (25 pts), Seeded Findings & SQL Guardrail (25 pts) |
+| `goal-2-codemender-mcp-deployment` | **Goal 2: Deploy CodeMender MCP Server, Runner Sandbox & Seed BigQuery** | 100 pts | BQ Dataset, GCS Bucket & IAM (25 pts), `codemender-mcp-server` & `codemender-runner` (25 pts), GE Transport & 14 Tools (25 pts), Seeded Findings & SQL Guardrail (25 pts) |
 | `goal-3-enterprise-mcp-connectors` | **Goal 3: Configure Wiz, GitHub & Cloud Logging MCP Connectors** | 100 pts | Wiz Onboarding & Secrets (25 pts), GitHub PAT & GE Custom MCP Org Policy (25 pts), Cloud Logging Remote MCP (25 pts), Seeded `logs/codemender` Correlation (25 pts) |
 | `goal-4-hitl-remediation` | **Goal 4: Human-in-the-Loop Remediation & Sandbox Verification (`CM-0001`)** | 100 pts | Remediation Branch & PR (30 pts), Parameterized SQL Fix in `app/db.py` (30 pts), Sandbox Validation Audit Trail (25 pts), Human Merge Guardrail (15 pts) |
 | `goal-5-cloud-armor-protection` | **Goal 5: Cloud Armor WAF & Ingress Lockdown (`watchlist`)** | 100 pts | Cloud Run LB Ingress & IaC (25 pts), Cloud Armor Default Deny & SQLi/LFI WAF (25 pts), Serverless NEG & External ALB (25 pts), Live `403` Blocking & Log Audit (25 pts) |
