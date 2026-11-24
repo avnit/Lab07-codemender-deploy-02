@@ -39,6 +39,7 @@ mcp = FastMCP(
         "execution logs, as well as read-only access to Wiz cloud security issues via Wiz tools."
     ),
     stateless_http=True,
+    json_response=True,
 )
 
 

@@ -35,16 +35,25 @@ JOB_SCHEMA: dict[str, str] = {
 
 FINDING_SCHEMA: dict[str, str] = {
     "finding_id": "STRING",
+    "issue_id": "STRING",
+    "event_type": "STRING",
+    "session_id": "STRING",
     "scan_job_id": "STRING",
     "repo": "STRING",
+    "repository": "STRING",
     "ref": "STRING",
     "commit_sha": "STRING",
     "payload_uri": "STRING",
     "fingerprint": "STRING",
     "rule_id": "STRING",
+    "cwe_id": "STRING",
+    "vulnerability_type": "STRING",
     "severity": "STRING",
+    "title": "STRING",
+    "description": "STRING",
     "message": "STRING",
     "file_path": "STRING",
+    "line_number": "INT64",
     "start_line": "INT64",
     "end_line": "INT64",
     # OPEN | VERIFIED | FALSE_POSITIVE | INCONCLUSIVE | FIXED | PATCHED
@@ -55,9 +64,11 @@ FINDING_SCHEMA: dict[str, str] = {
     "sarif": "STRING",  # single-result SARIF document
     "verified_sarif": "STRING",
     "patch": "STRING",  # unified diff from cm fix
+    "patch_ref": "STRING",
     "patch_branch": "STRING",
     "patch_commit": "STRING",
     "pr_url": "STRING",
+    "wiz_issue_id": "STRING",
     "last_job_id": "STRING",
     "created_at": "TIMESTAMP",
     "updated_at": "TIMESTAMP",
@@ -139,17 +150,32 @@ class InMemoryStore:
   def get_finding(self, finding_id: str) -> Optional[dict[str, Any]]:
     with self._lock:
       row = self.findings.get(finding_id)
-      return copy.deepcopy(row) if row else None
+      if not row:
+        return None
+      out = copy.deepcopy(row)
+      if not out.get("repo") and out.get("repository"):
+        out["repo"] = out["repository"]
+      return out
 
   def list_findings(self, repo="", status="", scan_job_id="", limit=100):
     with self._lock:
-      rows = [
-          {k: f.get(k) for k in FINDING_SUMMARY_COLUMNS}
-          for f in self.findings.values()
-          if (not repo or f.get("repo") == repo)
-          and (not status or f.get("status") == status)
-          and (not scan_job_id or f.get("scan_job_id") == scan_job_id)
-      ]
+      rows = []
+      for f in self.findings.values():
+        eff_repo = f.get("repo") or f.get("repository") or ""
+        if repo and eff_repo != repo:
+          continue
+        if status and f.get("status") != status:
+          continue
+        if scan_job_id and f.get("scan_job_id") != scan_job_id:
+          continue
+        summary = {k: f.get(k) for k in FINDING_SUMMARY_COLUMNS}
+        if not summary.get("repo") and eff_repo:
+          summary["repo"] = eff_repo
+        if not summary.get("rule_id"):
+          summary["rule_id"] = f.get("cwe_id") or f.get("vulnerability_type")
+        if summary.get("start_line") is None and f.get("line_number") is not None:
+          summary["start_line"] = f.get("line_number")
+        rows.append(summary)
     return rows[:limit]
 
   def update_finding(self, finding_id: str, fields: dict[str, Any]) -> None:
@@ -180,12 +206,15 @@ class BigQueryStore:
         (self._jobs_table, JOB_SCHEMA),
         (self._findings_table, FINDING_SCHEMA),
     ):
-      table = self._bq.Table(
-          table_id,
-          schema=[self._bq.SchemaField(n, t) for n, t in schema.items()],
-      )
+      desired_fields = [self._bq.SchemaField(n, t) for n, t in schema.items()]
+      table = self._bq.Table(table_id, schema=desired_fields)
       table.time_partitioning = self._bq.TimePartitioning(field="created_at")
-      self._client.create_table(table, exists_ok=True)
+      created = self._client.create_table(table, exists_ok=True)
+      existing_names = {f.name.lower() for f in created.schema}
+      missing = [f for f in desired_fields if f.name.lower() not in existing_names]
+      if missing:
+        created.schema = list(created.schema) + missing
+        self._client.update_table(created, ["schema"])
 
   # -- helpers -------------------------------------------------------------
   def _param(self, name: str, bq_type: str, value: Any):
@@ -221,10 +250,23 @@ class BigQueryStore:
 
   @staticmethod
   def _normalize(row: dict[str, Any]) -> dict[str, Any]:
-    return {
+    out = {
         k: (v.isoformat() if isinstance(v, datetime.datetime) else v)
         for k, v in row.items()
     }
+    if "repo" in out and not out.get("repo") and out.get("repository"):
+      out["repo"] = out["repository"]
+    if "rule_id" in out and not out.get("rule_id") and (
+        out.get("cwe_id") or out.get("vulnerability_type")
+    ):
+      out["rule_id"] = out.get("cwe_id") or out.get("vulnerability_type")
+    if (
+        "start_line" in out
+        and out.get("start_line") is None
+        and out.get("line_number") is not None
+    ):
+      out["start_line"] = out["line_number"]
+    return out
 
   # -- jobs ----------------------------------------------------------------
   def insert_job(self, row: dict[str, Any]) -> None:
@@ -265,21 +307,32 @@ class BigQueryStore:
 
   def get_finding(self, finding_id: str) -> Optional[dict[str, Any]]:
     rows = self._query(
-        f"SELECT * FROM `{self._findings_table}` WHERE finding_id = @id LIMIT 1",
+        f"SELECT * FROM `{self._findings_table}`"
+        " WHERE finding_id = @id OR issue_id = @id LIMIT 1",
         [self._param("id", "STRING", finding_id)],
     )
     return self._normalize(rows[0]) if rows else None
 
   def list_findings(self, repo="", status="", scan_job_id="", limit=100):
     where, params = [], [self._param("limit", "INT64", limit)]
-    for col, val in (("repo", repo), ("status", status),
-                     ("scan_job_id", scan_job_id)):
+    if repo:
+      where.append("(repo = @repo OR repository = @repo)")
+      params.append(self._param("repo", "STRING", repo))
+    for col, val in (("status", status), ("scan_job_id", scan_job_id)):
       if val:
         where.append(f"{col} = @{col}")
         params.append(self._param(col, "STRING", val))
     clause = f"WHERE {' AND '.join(where)}" if where else ""
+    select_cols = (
+        "finding_id, scan_job_id, COALESCE(repo, repository) AS repo, ref,"
+        " commit_sha, fingerprint,"
+        " COALESCE(rule_id, cwe_id, vulnerability_type) AS rule_id, severity,"
+        " COALESCE(message, title) AS message, file_path,"
+        " COALESCE(start_line, line_number) AS start_line, end_line, status,"
+        " verify_status, fix_status, pr_url, updated_at"
+    )
     rows = self._query(
-        f"SELECT {', '.join(FINDING_SUMMARY_COLUMNS)} FROM `{self._findings_table}`"
+        f"SELECT {select_cols} FROM `{self._findings_table}`"
         f" {clause} ORDER BY created_at DESC, finding_id LIMIT @limit",
         params,
     )

@@ -149,24 +149,30 @@ class BigQueryService:
             query_params.append(bigquery.ScalarQueryParameter("status", "STRING", status))
 
         if repository:
-            where_clauses.append("LOWER(CAST(repository AS STRING)) LIKE LOWER(@repository)")
+            where_clauses.append(
+                "LOWER(COALESCE(CAST(repository AS STRING), CAST(repo AS STRING), '')) LIKE LOWER(@repository)"
+            )
             query_params.append(bigquery.ScalarQueryParameter("repository", "STRING", f"%{repository}%"))
 
         if vulnerability_type:
             where_clauses.append(
                 "(LOWER(CAST(vulnerability_type AS STRING)) LIKE LOWER(@vuln_type) OR "
-                "LOWER(CAST(cwe_id AS STRING)) LIKE LOWER(@vuln_type))"
+                "LOWER(CAST(cwe_id AS STRING)) LIKE LOWER(@vuln_type) OR "
+                "LOWER(CAST(rule_id AS STRING)) LIKE LOWER(@vuln_type))"
             )
             query_params.append(bigquery.ScalarQueryParameter("vuln_type", "STRING", f"%{vulnerability_type}%"))
 
         if session_id:
-            where_clauses.append("CAST(session_id AS STRING) = @session_id")
+            where_clauses.append(
+                "(CAST(session_id AS STRING) = @session_id OR CAST(scan_job_id AS STRING) = @session_id)"
+            )
             query_params.append(bigquery.ScalarQueryParameter("session_id", "STRING", session_id))
 
         if search_query:
             where_clauses.append(
                 "(LOWER(CAST(title AS STRING)) LIKE LOWER(@search) OR "
                 "LOWER(CAST(description AS STRING)) LIKE LOWER(@search) OR "
+                "LOWER(CAST(message AS STRING)) LIKE LOWER(@search) OR "
                 "LOWER(CAST(file_path AS STRING)) LIKE LOWER(@search))"
             )
             query_params.append(bigquery.ScalarQueryParameter("search", "STRING", f"%{search_query}%"))
@@ -237,13 +243,12 @@ class BigQueryService:
         tb = table or self.table
         target_table = f"`{self.client.project}.{ds}.{tb}`"
 
-        # Look up by finding_id or issue_id or id
+        # Look up by finding_id or issue_id
         sql = f"""
             SELECT *
             FROM {target_table}
             WHERE CAST(finding_id AS STRING) = @issue_id
                OR CAST(issue_id AS STRING) = @issue_id
-               OR CAST(id AS STRING) = @issue_id
             LIMIT 1
         """
         job_config = bigquery.QueryJobConfig(
@@ -274,11 +279,15 @@ class BigQueryService:
         tb = table or self.table
         target_table = f"`{self.client.project}.{ds}.{tb}`"
 
-        where_clauses = ["created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)"]
+        where_clauses = [
+            "(created_at IS NULL OR created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY))"
+        ]
         params = [bigquery.ScalarQueryParameter("days", "INT64", max(1, days))]
 
         if repository:
-            where_clauses.append("LOWER(CAST(repository AS STRING)) LIKE LOWER(@repo)")
+            where_clauses.append(
+                "LOWER(COALESCE(CAST(repository AS STRING), CAST(repo AS STRING), '')) LIKE LOWER(@repo)"
+            )
             params.append(bigquery.ScalarQueryParameter("repo", "STRING", f"%{repository}%"))
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}"
@@ -299,7 +308,7 @@ class BigQueryService:
 
         top_vulns_sql = f"""
             SELECT
-                COALESCE(CAST(vulnerability_type AS STRING), CAST(cwe_id AS STRING), 'Unknown') AS vuln_type,
+                COALESCE(CAST(vulnerability_type AS STRING), CAST(cwe_id AS STRING), CAST(rule_id AS STRING), 'Unknown') AS vuln_type,
                 COUNT(*) AS count
             FROM {target_table}
             {where_sql}

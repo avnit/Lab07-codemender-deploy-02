@@ -260,6 +260,91 @@ else
   ok "created BigQuery dataset ${BQ_DATASET} (${BQ_LOCATION})"
 fi
 
+# Ensure the unified findings table schema exists (supports both live cm_find
+# SARIF ingestion and Lab 7 mock-findings.json bq load --autodetect seeding).
+bq --project_id="$PROJECT_ID" --location="$BQ_LOCATION" query --use_legacy_sql=false --quiet >/dev/null <<EOSQL
+CREATE TABLE IF NOT EXISTS \`${PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\` (
+  finding_id STRING,
+  issue_id STRING,
+  event_type STRING,
+  session_id STRING,
+  scan_job_id STRING,
+  repo STRING,
+  repository STRING,
+  ref STRING,
+  commit_sha STRING,
+  payload_uri STRING,
+  fingerprint STRING,
+  rule_id STRING,
+  cwe_id STRING,
+  vulnerability_type STRING,
+  severity STRING,
+  title STRING,
+  description STRING,
+  message STRING,
+  file_path STRING,
+  line_number INT64,
+  start_line INT64,
+  end_line INT64,
+  status STRING,
+  verify_status STRING,
+  dismiss_reason STRING,
+  fix_status STRING,
+  sarif STRING,
+  verified_sarif STRING,
+  patch STRING,
+  patch_ref STRING,
+  patch_branch STRING,
+  patch_commit STRING,
+  pr_url STRING,
+  wiz_issue_id STRING,
+  last_job_id STRING,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+)
+PARTITION BY DATE(created_at);
+
+ALTER TABLE \`${PROJECT_ID}.${BQ_DATASET}.${BQ_TABLE}\`
+  ADD COLUMN IF NOT EXISTS finding_id STRING,
+  ADD COLUMN IF NOT EXISTS issue_id STRING,
+  ADD COLUMN IF NOT EXISTS event_type STRING,
+  ADD COLUMN IF NOT EXISTS session_id STRING,
+  ADD COLUMN IF NOT EXISTS scan_job_id STRING,
+  ADD COLUMN IF NOT EXISTS repo STRING,
+  ADD COLUMN IF NOT EXISTS repository STRING,
+  ADD COLUMN IF NOT EXISTS ref STRING,
+  ADD COLUMN IF NOT EXISTS commit_sha STRING,
+  ADD COLUMN IF NOT EXISTS payload_uri STRING,
+  ADD COLUMN IF NOT EXISTS fingerprint STRING,
+  ADD COLUMN IF NOT EXISTS rule_id STRING,
+  ADD COLUMN IF NOT EXISTS cwe_id STRING,
+  ADD COLUMN IF NOT EXISTS vulnerability_type STRING,
+  ADD COLUMN IF NOT EXISTS severity STRING,
+  ADD COLUMN IF NOT EXISTS title STRING,
+  ADD COLUMN IF NOT EXISTS description STRING,
+  ADD COLUMN IF NOT EXISTS message STRING,
+  ADD COLUMN IF NOT EXISTS file_path STRING,
+  ADD COLUMN IF NOT EXISTS line_number INT64,
+  ADD COLUMN IF NOT EXISTS start_line INT64,
+  ADD COLUMN IF NOT EXISTS end_line INT64,
+  ADD COLUMN IF NOT EXISTS status STRING,
+  ADD COLUMN IF NOT EXISTS verify_status STRING,
+  ADD COLUMN IF NOT EXISTS dismiss_reason STRING,
+  ADD COLUMN IF NOT EXISTS fix_status STRING,
+  ADD COLUMN IF NOT EXISTS sarif STRING,
+  ADD COLUMN IF NOT EXISTS verified_sarif STRING,
+  ADD COLUMN IF NOT EXISTS patch STRING,
+  ADD COLUMN IF NOT EXISTS patch_ref STRING,
+  ADD COLUMN IF NOT EXISTS patch_branch STRING,
+  ADD COLUMN IF NOT EXISTS patch_commit STRING,
+  ADD COLUMN IF NOT EXISTS pr_url STRING,
+  ADD COLUMN IF NOT EXISTS wiz_issue_id STRING,
+  ADD COLUMN IF NOT EXISTS last_job_id STRING,
+  ADD COLUMN IF NOT EXISTS created_at TIMESTAMP,
+  ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP;
+EOSQL
+ok "BigQuery table ${BQ_DATASET}.${BQ_TABLE} schema reconciled"
+
 # ------------------------------------------------- service accounts + IAM
 ensure_sa() {  # ensure_sa EMAIL DISPLAY_NAME
   local email="$1" name="${1%%@*}"
@@ -467,10 +552,30 @@ INVOKERS=()
 if [[ "$ALLOW_UNAUTHENTICATED" != true ]]; then
   if [[ -n "${INVOKER_MEMBERS:-}" ]]; then
     IFS=',' read -r -a INVOKERS <<< "$INVOKER_MEMBERS"
-  elif [[ "$ACCOUNT" == *.gserviceaccount.com ]]; then
-    INVOKERS=("serviceAccount:${ACCOUNT}")
-  elif [[ -n "$ACCOUNT" ]]; then
-    INVOKERS=("user:${ACCOUNT}")
+  else
+    if [[ "$ACCOUNT" == *.gserviceaccount.com ]]; then
+      INVOKERS+=("serviceAccount:${ACCOUNT}")
+    elif [[ -n "$ACCOUNT" ]]; then
+      INVOKERS+=("user:${ACCOUNT}")
+    fi
+    # Include Gemini Enterprise (Discovery Engine), Vertex AI Agent Engine,
+    # and project IAM users already provisioned in this project so GE custom
+    # MCP calls do not fail with 403 run.routes.invoke denied.
+    PROJECT_IAM_JSON="$(gcloud projects get-iam-policy "$PROJECT_ID" --format=json 2>/dev/null || true)"
+    for candidate in \
+      "serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-discoveryengine.iam.gserviceaccount.com" \
+      "serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-aiplatform-re.iam.gserviceaccount.com" \
+      "serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-aiplatform.iam.gserviceaccount.com" \
+      "serviceAccount:service-${PROJECT_NUMBER}@gcp-sa-dialogflow.iam.gserviceaccount.com" \
+      "serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"; do
+      if [[ "$PROJECT_IAM_JSON" == *"\"${candidate}\""* ]]; then
+        INVOKERS+=("$candidate")
+      fi
+    done
+    while IFS= read -r proj_user; do
+      [[ -z "$proj_user" || "$proj_user" == "user:${ACCOUNT}" ]] && continue
+      INVOKERS+=("$proj_user")
+    done < <(grep -oE '"user:[^"]+"' <<< "$PROJECT_IAM_JSON" | tr -d '"' | sort -u || true)
   fi
 fi
 

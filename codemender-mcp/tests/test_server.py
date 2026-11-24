@@ -107,6 +107,46 @@ class TestBigQueryService(unittest.TestCase):
         res_semicolon = service.execute_read_query("SELECT * FROM `test.table`;")
         self.assertNotIn("error", res_semicolon)
 
+    def test_get_issue_details_avoids_nonexistent_id_column(self):
+        service = BigQueryService(project_id="test-project", dataset="codemender", table="findings")
+        mock_client = MagicMock()
+        mock_client.project = "test-project"
+        mock_job = MagicMock()
+        mock_job.result.return_value = [{"finding_id": "CM-0001", "issue_id": "CM-0001"}]
+        mock_client.query.return_value = mock_job
+        service._client = mock_client
+
+        res = service.get_issue_details("CM-0001")
+        self.assertEqual(res["finding_id"], "CM-0001")
+        sql_executed = mock_client.query.call_args[0][0]
+        self.assertNotIn("CAST(id AS STRING)", sql_executed)
+        self.assertIn("CAST(finding_id AS STRING)", sql_executed)
+        self.assertIn("CAST(issue_id AS STRING)", sql_executed)
+
+    def test_get_issues_summary_includes_null_created_at(self):
+        service = BigQueryService(project_id="test-project", dataset="codemender", table="findings")
+        mock_client = MagicMock()
+        mock_client.project = "test-project"
+        summary_job = MagicMock()
+        summary_job.result.return_value = [{
+            "total_issues": 4,
+            "critical_count": 1,
+            "high_count": 2,
+            "medium_count": 1,
+            "low_count": 0,
+            "resolved_count": 0,
+            "open_count": 4,
+        }]
+        top_job = MagicMock()
+        top_job.result.return_value = [{"vuln_type": "SQL_INJECTION", "count": 1}]
+        mock_client.query.side_effect = [summary_job, top_job]
+        service._client = mock_client
+
+        res = service.get_issues_summary(repository="avnit/Lab07-CloudRun-Service-Deploy-1")
+        self.assertEqual(res["total_issues"], 4)
+        first_sql = mock_client.query.call_args_list[0][0][0]
+        self.assertIn("created_at IS NULL", first_sql)
+
 
 class TestLoggingService(unittest.TestCase):
     @patch("services.logging_service.logging_v2.Client")

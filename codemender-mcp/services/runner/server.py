@@ -129,7 +129,47 @@ def build_mcp(service: CodeMenderService, settings: Settings) -> FastMCP:
   async def healthz(_: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
+  mcp.settings.transport_security.enable_dns_rebinding_protection = False
   return mcp
+
+
+class HttpCompatibilityMiddleware:
+  """Handles CORS OPTIONS, HEAD, DELETE and normalizes Accept headers for GE."""
+
+  def __init__(self, app) -> None:
+    self.app = app
+
+  async def __call__(self, scope, receive, send) -> None:
+    if scope["type"] == "http":
+      from starlette.responses import Response  # pylint: disable=import-outside-toplevel
+      method = scope.get("method", "")
+      if method == "OPTIONS":
+        resp = Response(
+            status_code=204,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS, HEAD",
+                "Access-Control-Allow-Headers": "*",
+            },
+        )
+        await resp(scope, receive, send)
+        return
+      if method == "DELETE":
+        resp = JSONResponse({"status": "session terminated"}, status_code=200,
+                            headers={"Access-Control-Allow-Origin": "*"})
+        await resp(scope, receive, send)
+        return
+      if method == "HEAD":
+        resp = Response(status_code=200, headers={"Access-Control-Allow-Origin": "*"})
+        await resp(scope, receive, send)
+        return
+      headers = dict(scope.get("headers") or [])
+      accept = headers.get(b"accept", b"").decode("utf-8", "ignore")
+      if not ("application/json" in accept and "text/event-stream" in accept):
+        new_headers = [(k, v) for k, v in (scope.get("headers") or []) if k != b"accept"]
+        new_headers.append((b"accept", b"application/json, text/event-stream"))
+        scope["headers"] = new_headers
+    await self.app(scope, receive, send)
 
 
 class BearerAuthMiddleware:
@@ -143,7 +183,11 @@ class BearerAuthMiddleware:
     self._expected = f"Bearer {token}".encode()
 
   async def __call__(self, scope, receive, send) -> None:
-    if scope["type"] == "http" and scope.get("path") != "/healthz":
+    if (
+        scope["type"] == "http"
+        and scope.get("path") != "/healthz"
+        and scope.get("method") != "OPTIONS"
+    ):
       headers = dict(scope.get("headers") or [])
       if not hmac.compare_digest(headers.get(b"authorization", b""), self._expected):
         resp = JSONResponse({"error": "unauthorized"}, status_code=401)
@@ -172,7 +216,7 @@ def build_app(settings: Optional[Settings] = None, service: Optional[CodeMenderS
   """Returns the ASGI app (MCP endpoint at `/mcp`)."""
   settings = settings or Settings.from_env()
   service = service or build_service(settings)
-  app = build_mcp(service, settings).streamable_http_app()
+  app = HttpCompatibilityMiddleware(build_mcp(service, settings).streamable_http_app())
   if settings.auth_token:
     app = BearerAuthMiddleware(app, settings.auth_token)
   return app, service
