@@ -446,6 +446,9 @@ step "Secrets"
 RUNNER_MCP_SECRETS=()
 MCP_SECRETS=()
 
+if [[ -z "$GITHUB_TOKEN" ]] && ! secret_exists "$GITHUB_SECRET" && secret_exists "github-token"; then
+  GITHUB_SECRET="github-token"
+fi
 if [[ -n "$GITHUB_TOKEN" ]]; then
   put_secret "$GITHUB_SECRET" "$GITHUB_TOKEN"
 fi
