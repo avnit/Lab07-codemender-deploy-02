@@ -199,9 +199,18 @@ class BigQueryStore:
 
   # -- schema --------------------------------------------------------------
   def ensure_schema(self) -> None:
-    ds = self._bq.Dataset(self._dataset)
-    ds.location = self._location
-    self._client.create_dataset(ds, exists_ok=True)
+    from google.api_core import exceptions  # pylint: disable=import-outside-toplevel
+
+    # Look the dataset up before creating it. `create_dataset(exists_ok=True)`
+    # still sends the create call, which needs project-level
+    # `bigquery.datasets.create`; a service account that only has access to
+    # this dataset gets a 403 even though the dataset exists.
+    try:
+      self._client.get_dataset(self._dataset)
+    except exceptions.NotFound:
+      ds = self._bq.Dataset(self._dataset)
+      ds.location = self._location
+      self._client.create_dataset(ds, exists_ok=True)
     for table_id, schema in (
         (self._jobs_table, JOB_SCHEMA),
         (self._findings_table, FINDING_SCHEMA),
