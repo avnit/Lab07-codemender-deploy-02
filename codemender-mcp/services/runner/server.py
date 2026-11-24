@@ -129,7 +129,10 @@ def build_mcp(service: CodeMenderService, settings: Settings) -> FastMCP:
   async def healthz(_: Request) -> JSONResponse:
     return JSONResponse({"ok": True})
 
-  mcp.settings.transport_security.enable_dns_rebinding_protection = False
+  # FastMCP only creates transport_security for localhost binds; with
+  # host="0.0.0.0" it is None and DNS-rebinding protection is already off.
+  if mcp.settings.transport_security is not None:
+    mcp.settings.transport_security.enable_dns_rebinding_protection = False
   return mcp
 
 
