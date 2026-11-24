@@ -453,6 +453,8 @@ async def health_check(request: Request) -> Response:
             "dataset": bq_service.dataset,
             "table": bq_service.table,
             "runner_configured": bool(settings.gcp_project_id),
+            # True when a GitHub token is mounted; never exposes the value.
+            "github_token_configured": bool((settings.github_token or "").strip()),
         }
     )
 

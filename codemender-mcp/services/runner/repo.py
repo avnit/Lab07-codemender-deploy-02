@@ -25,6 +25,13 @@ _GIT_TIMEOUT_SECONDS = 900
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 _OWNER_REPO_RE = re.compile(r"^([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?$")
 _TAR_EXCLUDES = ("__pycache__", ".cm_project", ".exploit")
+# git / GitHub messages that mean "credentials missing or rejected".
+_AUTH_FAILURE_RE = re.compile(
+    r"could not read Username|could not read Password|Authentication failed"
+    r"|terminal prompts disabled|HTTP 401|HTTP 403|returned error: 40[13]",
+    re.IGNORECASE,
+)
+_NOT_FOUND_RE = re.compile(r"Repository not found|returned error: 404", re.IGNORECASE)
 
 
 class RepoError(Exception):
@@ -79,7 +86,9 @@ class GitClient:
       author_name: str = "CodeMender Bot",
       author_email: str = "codemender-bot@users.noreply.github.com",
   ) -> None:
-    self._token = token
+    # Secrets created with `echo` end in a newline; a token with trailing
+    # whitespace is sent as-is in the Authorization header and GitHub rejects it.
+    self._token = (token or "").strip()
     self._author_name = author_name
     self._author_email = author_email
 
@@ -88,6 +97,28 @@ class GitClient:
       return []
     basic = base64.b64encode(f"x-access-token:{self._token}".encode()).decode()
     return ["-c", f"http.https://github.com/.extraHeader=Authorization: Basic {basic}"]
+
+  def _auth_hint(self, err: str, repo: RepoRef) -> str:
+    """Explains a credential failure so the caller knows what to fix."""
+    name = repo.full_name
+    if _AUTH_FAILURE_RE.search(err):
+      if not repo.github:
+        return (f" [{name} needs credentials. Only github.com repositories are"
+                " authenticated with GITHUB_TOKEN.]")
+      if not self._token:
+        return (f" [{name} is private or does not exist, and no GitHub token is"
+                " configured on the MCP server. Set the GITHUB_TOKEN secret"
+                " (re-run deploy.sh with GITHUB_TOKEN=<token>) using a token that"
+                " can read this repository.]")
+      return (f" [GitHub rejected the configured GITHUB_TOKEN while cloning {name}."
+              " The token is invalid, expired or revoked; store a new one in the"
+              " GITHUB_TOKEN secret and redeploy.]")
+    if _NOT_FOUND_RE.search(err) and repo.github and self._token:
+      return (f" [The configured GITHUB_TOKEN cannot see {name}. Check the"
+              " repository name, and that the token has access to it: 'repo' scope"
+              " for a classic token, or this repository selected with Contents:"
+              " Read for a fine-grained token.]")
+    return ""
 
   def _git(
       self,
@@ -120,7 +151,9 @@ class GitClient:
       err = res.stderr.decode("utf-8", "replace")
       if self._token:
         err = err.replace(self._token, "***")
-      raise RepoError(f"git {args[0]} failed (exit {res.returncode}): {err.strip()}")
+      hint = self._auth_hint(err, repo) if repo else ""
+      raise RepoError(
+          f"git {args[0]} failed (exit {res.returncode}): {err.strip()}{hint}")
     return res.stdout.decode("utf-8", "replace").strip()
 
   def clone(self, repo: RepoRef, dest: Path, ref: str = "") -> str:
@@ -208,7 +241,7 @@ class GitHubClient:
   """Minimal GitHub REST client for opening fix pull requests."""
 
   def __init__(self, token: str, api_url: str = "https://api.github.com") -> None:
-    self._token = token
+    self._token = (token or "").strip()
     self._api = api_url.rstrip("/")
 
   def default_branch(self, full_name: str) -> str:
