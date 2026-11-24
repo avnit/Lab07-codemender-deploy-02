@@ -214,6 +214,35 @@ class TestFind(ServiceTestBase):
     with self.assertRaises(RepoError):
       self.service.start_find("https://user:secret@example.com/x.git")
 
+  def test_mock_findings_schema_compatible(self):
+    mock_row = {
+        "event_type": "CODEMENDER_FINDING",
+        "issue_id": "CM-0001",
+        "finding_id": "CM-0001",
+        "session_id": "cm-session-mock-watchlist-0001",
+        "repository": "avnit/Lab07-CloudRun-Service-Deploy-1",
+        "commit_sha": "",
+        "severity": "CRITICAL",
+        "cwe_id": "CWE-89",
+        "vulnerability_type": "SQL_INJECTION",
+        "file_path": "app/db.py",
+        "line_number": 294,
+        "title": "SQL injection in search_items",
+        "description": "Parameterized query missing.",
+        "status": "OPEN",
+        "patch_ref": "",
+        "pr_url": "",
+        "wiz_issue_id": "wiz-issue-0001",
+        "message": "CodeMender finding CM-0001 (CWE-89) in app/db.py:294",
+    }
+    self.store.insert_findings([mock_row])
+    listed = self.service.list_findings("avnit/Lab07-CloudRun-Service-Deploy-1")
+    self.assertEqual(len(listed), 1)
+    self.assertEqual(listed[0]["finding_id"], "CM-0001")
+    self.assertEqual(listed[0]["repo"], "avnit/Lab07-CloudRun-Service-Deploy-1")
+    self.assertEqual(listed[0]["rule_id"], "CWE-89")
+    self.assertEqual(listed[0]["start_line"], 294)
+
 
 class TestValidate(ServiceTestBase):
 

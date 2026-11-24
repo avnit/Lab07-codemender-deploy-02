@@ -205,6 +205,50 @@ class TestBigQueryService(unittest.TestCase):
         res_semicolon = service.execute_read_query("SELECT * FROM `test.table`;")
         self.assertNotIn("error", res_semicolon)
 
+    def test_get_issue_details_avoids_nonexistent_id_column(self):
+        service = BigQueryService(project_id="test-project", dataset="codemender", table="findings")
+        mock_client = MagicMock()
+        mock_client.project = "test-project"
+        mock_job = MagicMock()
+        mock_job.result.return_value = [{"finding_id": "CM-0001", "issue_id": "CM-0001"}]
+        mock_client.query.return_value = mock_job
+        service._client = mock_client
+
+        res = service.get_issue_details("CM-0001")
+        self.assertEqual(res["finding_id"], "CM-0001")
+        sql_executed = mock_client.query.call_args[0][0]
+        self.assertNotIn("CAST(id AS STRING)", sql_executed)
+        self.assertIn("CAST(finding_id AS STRING)", sql_executed)
+        self.assertIn("CAST(issue_id AS STRING)", sql_executed)
+
+    def test_get_issues_summary_includes_null_created_at(self):
+        service = BigQueryService(project_id="test-project", dataset="codemender", table="findings")
+        mock_client = MagicMock()
+        mock_client.project = "test-project"
+        summary_job = MagicMock()
+        summary_job.result.return_value = [{
+            "total_issues": 4,
+            "resolved_count": 0,
+            "open_count": 4,
+        }]
+        severity_job = MagicMock()
+        severity_job.result.return_value = [
+            {"severity": "CRITICAL", "count": 1},
+            {"severity": "HIGH", "count": 2},
+            {"severity": "MEDIUM", "count": 1},
+        ]
+        top_job = MagicMock()
+        top_job.result.return_value = [{"vuln_type": "SQL_INJECTION", "count": 1}]
+        mock_client.query.side_effect = [summary_job, severity_job, top_job]
+        service._client = mock_client
+
+        res = service.get_issues_summary(repository="avnit/Lab07-CloudRun-Service-Deploy-1")
+        self.assertEqual(res["total_issues"], 4)
+        self.assertEqual(res["severity_breakdown"],
+                         {"CRITICAL": 1, "HIGH": 2, "MEDIUM": 1, "LOW": 0})
+        for call in mock_client.query.call_args_list:
+            self.assertIn("created_at IS NULL", call[0][0])
+
 
 class TestLoggingService(unittest.TestCase):
     @patch("services.logging_service.logging_v2.Client")

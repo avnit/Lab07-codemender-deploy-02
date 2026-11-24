@@ -359,7 +359,9 @@ class BigQueryService:
         tb = table or self.table
         target_table = f"`{self.client.project}.{ds}.{tb}`"
 
-        where_clauses = ["created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY)"]
+        where_clauses = [
+            "(created_at IS NULL OR created_at >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL @days DAY))"
+        ]
         params = [bigquery.ScalarQueryParameter("days", "INT64", max(1, days))]
 
         try:

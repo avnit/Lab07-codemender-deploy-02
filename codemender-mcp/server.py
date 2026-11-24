@@ -37,6 +37,7 @@ mcp = FastMCP(
         "execution logs."
     ),
     stateless_http=True,
+    json_response=True,
 )
 
 
