@@ -104,7 +104,7 @@ GOAL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "description": (
             "Provision the codemender BigQuery dataset and GCS transit bucket, deploy "
             "codemender-mcp-server and codemender-runner, verify Gemini Enterprise HTTP transport "
-            "compatibility and all 18 MCP tools, seed CM-0001..CM-0004 findings, and validate SQL guardrails."
+            "compatibility and all 14 MCP tools, seed CM-0001..CM-0004 findings, and validate SQL guardrails."
         ),
         "max_points": 100,
         "implemented": True,
@@ -126,8 +126,8 @@ GOAL_REGISTRY: Dict[str, Dict[str, Any]] = {
             {
                 "step_id": "step-3",
                 "step_number": 3,
-                "title": "Step 3: Gemini Enterprise HTTP Transport Compatibility & 18-Tool Registry",
-                "pillar": "Pillar 3: Gemini Enterprise HTTP Transport Compatibility & 18-Tool Registry",
+                "title": "Step 3: Gemini Enterprise HTTP Transport Compatibility & 14-Tool Registry",
+                "pillar": "Pillar 3: Gemini Enterprise HTTP Transport Compatibility & 14-Tool Registry",
                 "max_points": 25,
             },
             {
@@ -320,10 +320,6 @@ EXPECTED_CODEMENDER_TOOLS = [
     "query_codemender_bigquery",
     "get_issue_logs",
     "search_codemender_logs",
-    "list_wiz_issues",
-    "get_wiz_issue_details",
-    "get_wiz_issues_summary",
-    "query_wiz_graphql",
 ]
 
 PLACEHOLDER_VALUES = {
@@ -1655,9 +1651,9 @@ def run_goal_2_checks(
         )
     )
 
-    # --- Step 3 (25 pts): Gemini Enterprise HTTP Transport Compatibility & 18-Tool Registry ---
-    print("[4/6] Checking Goal 2 / Step 3: Gemini Enterprise Transport Compatibility & 18-Tool Registry...")
-    p3 = "Pillar 3: Gemini Enterprise HTTP Transport Compatibility & 18-Tool Registry"
+    # --- Step 3 (25 pts): Gemini Enterprise HTTP Transport Compatibility & 14-Tool Registry ---
+    print("[4/6] Checking Goal 2 / Step 3: Gemini Enterprise Transport Compatibility & 14-Tool Registry...")
+    p3 = "Pillar 3: Gemini Enterprise HTTP Transport Compatibility & 14-Tool Registry"
     st_opt, st_del, st_init = 0, 0, 0
     init_ok = False
     if mcp_uri:
@@ -1738,14 +1734,14 @@ def run_goal_2_checks(
         make_check(
             check_id="3.2",
             pillar=p3,
-            title="All 18 CodeMender, BigQuery, Cloud Logging & Wiz MCP Tools Registered (`tools/list`)",
+            title="All 14 CodeMender, BigQuery & Cloud Logging MCP Tools Registered (`tools/list`)",
             passed=c32_ok,
             max_points=15,
             earned_points=15 if c32_ok else (8 if len(registered_tools) >= 7 else 0),
             summary=(
                 f"All {len(EXPECTED_CODEMENDER_TOOLS)} expected MCP tools are registered and exposed on `/mcp`."
                 if c32_ok
-                else f"Found {len(registered_tools)}/18 expected tools on `/mcp`; missing: {missing_tools}."
+                else f"Found {len(registered_tools)}/{len(EXPECTED_CODEMENDER_TOOLS)} expected tools on `/mcp`; missing: {missing_tools}."
             ),
             evidence={
                 "registered_tool_count": len(registered_tools),

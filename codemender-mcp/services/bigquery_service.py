@@ -8,8 +8,31 @@ from google.cloud import bigquery
 from google.cloud.exceptions import NotFound, GoogleCloudError
 
 from config import settings
+from services.runner.store import FINDING_SCHEMA
+from services.severity import LEVEL_TO_SEVERITY, SEVERITIES, normalize_severity, severity_sql
 
 logger = logging.getLogger(__name__)
+
+# Logical field -> candidate column names, in preference order. The first names
+# are the columns of the `findings` table that `cm_find` writes
+# (services/runner/store.py: FINDING_SCHEMA). The later names are accepted so a
+# table created with the older issue-style layout can still be queried.
+FIELD_COLUMNS: Dict[str, Tuple[str, ...]] = {
+    "id": ("finding_id", "issue_id", "id"),
+    "repository": ("repo", "repository"),
+    "vulnerability_type": ("rule_id", "vulnerability_type", "cwe_id"),
+    "session_id": ("scan_job_id", "last_job_id", "session_id"),
+    "search": ("message", "title", "description", "file_path", "rule_id"),
+}
+
+# Statuses that mean a finding needs no further work. In the table `cm_find`
+# writes, VERIFIED means "confirmed exploitable", so it counts as open.
+RESOLVED_STATUSES = ("FIXED", "PATCHED", "APPLIED")
+NOT_OPEN_STATUSES = RESOLVED_STATUSES + ("FALSE_POSITIVE",)
+
+
+class SchemaMismatchError(ValueError):
+    """A filter was requested on a field the target table has no column for."""
 
 
 def serialize_bq_val(val: Any) -> Any:
@@ -37,6 +60,20 @@ def serialize_row(row: bigquery.Row) -> Dict[str, Any]:
     return {key: serialize_bq_val(val) for key, val in row.items()}
 
 
+def serialize_finding(row: bigquery.Row) -> Dict[str, Any]:
+    """Serialize a findings row with `severity` as CRITICAL / HIGH / MEDIUM / LOW.
+
+    Rows ingested before the mapping existed hold the raw SARIF level. Those are
+    mapped here and the stored value is kept under `sarif_level`.
+    """
+    data = serialize_row(row)
+    stored = data.get("severity")
+    if isinstance(stored, str) and stored.strip().upper() in LEVEL_TO_SEVERITY:
+        data["sarif_level"] = stored
+        data["severity"] = normalize_severity(stored)
+    return data
+
+
 class BigQueryService:
     """Service for querying and analyzing Code Mender issues in BigQuery."""
 
@@ -50,6 +87,7 @@ class BigQueryService:
         self.dataset = dataset or settings.bq_dataset
         self.table = table or settings.bq_table
         self._client: Optional[bigquery.Client] = None
+        self._columns_cache: Dict[str, List[str]] = {}
 
     @property
     def client(self) -> bigquery.Client:
@@ -64,6 +102,39 @@ class BigQueryService:
         """Returns the fully qualified table name `project.dataset.table`."""
         project = self.client.project
         return f"`{project}.{self.dataset}.{self.table}`"
+
+    def _table_columns(self, ds: str, tb: str) -> List[str]:
+        """Column names of the target table, cached per table.
+
+        Raises NotFound if the table does not exist. If the schema cannot be
+        read for any other reason, assumes the layout `cm_find` writes.
+        """
+        key = f"{self.client.project}.{ds}.{tb}"
+        cached = self._columns_cache.get(key)
+        if cached is not None:
+            return cached
+        try:
+            columns = [str(field.name) for field in self.client.get_table(key).schema]
+        except NotFound:
+            raise
+        except Exception as e:  # pylint: disable=broad-except
+            logger.warning("Could not read schema of %s (%s); assuming the cm_find layout.", key, e)
+            return list(FINDING_SCHEMA)
+        if not columns:
+            return list(FINDING_SCHEMA)
+        self._columns_cache[key] = columns
+        return columns
+
+    @staticmethod
+    def _field_exprs(field: str, columns: List[str]) -> List[str]:
+        """SQL string expressions for the columns that back a logical field."""
+        present = [c for c in FIELD_COLUMNS[field] if c in columns]
+        if not present:
+            raise SchemaMismatchError(
+                f"Cannot filter by '{field}': the table has none of the columns "
+                f"{list(FIELD_COLUMNS[field])}. Available columns: {sorted(columns)}."
+            )
+        return [f"CAST({c} AS STRING)" for c in present]
 
     def get_table_schema(
         self, dataset: Optional[str] = None, table: Optional[str] = None
@@ -117,12 +188,13 @@ class BigQueryService:
         """List Code Mender issues from BigQuery with flexible filtering.
 
         Args:
-            severity: Filter by severity (e.g. CRITICAL, HIGH, MEDIUM, LOW).
-            status: Filter by status (e.g. DETECTED, OPEN, PATCH_GENERATED, VERIFIED, APPLIED, FIXED, FAILED).
-            repository: Filter by repository name or path.
-            vulnerability_type: Filter by vulnerability type or CWE ID.
-            session_id: Filter by Code Mender session/run ID.
-            search_query: Search string within title, description, or file_path.
+            severity: Filter by severity (CRITICAL, HIGH, MEDIUM, LOW). A SARIF level
+                (ERROR, WARNING, NOTE) is accepted and mapped to HIGH, MEDIUM, LOW.
+            status: Filter by status (OPEN, VERIFIED, FALSE_POSITIVE, INCONCLUSIVE, FIXED, PATCHED).
+            repository: Filter by repository name or path (column `repo`).
+            vulnerability_type: Filter by rule ID / vulnerability type / CWE (column `rule_id`).
+            session_id: Filter by the scan job ID that produced the finding (column `scan_job_id`).
+            search_query: Search string within message, file_path, or rule_id.
             start_date: Filter for issues created on or after this ISO date/timestamp.
             end_date: Filter for issues created on or before this ISO date/timestamp.
             limit: Maximum number of records to return (capped at settings.max_query_limit).
@@ -140,41 +212,43 @@ class BigQueryService:
         where_clauses: List[str] = []
         query_params: List[bigquery.ScalarQueryParameter] = []
 
+        try:
+            columns = self._table_columns(ds, tb)
+            repo_exprs = self._field_exprs("repository", columns) if repository else []
+            vuln_exprs = self._field_exprs("vulnerability_type", columns) if vulnerability_type else []
+            session_exprs = self._field_exprs("session_id", columns) if session_id else []
+            search_exprs = self._field_exprs("search", columns) if search_query else []
+        except NotFound:
+            return {"error": f"Table {target_table} does not exist in project '{self.client.project}'."}
+        except SchemaMismatchError as e:
+            return {"error": str(e)}
+
         if severity:
-            where_clauses.append("UPPER(CAST(severity AS STRING)) = UPPER(@severity)")
-            query_params.append(bigquery.ScalarQueryParameter("severity", "STRING", severity))
+            where_clauses.append(f"{severity_sql()} = @severity")
+            query_params.append(
+                bigquery.ScalarQueryParameter("severity", "STRING", normalize_severity(severity)))
 
         if status:
             where_clauses.append("UPPER(CAST(status AS STRING)) = UPPER(@status)")
             query_params.append(bigquery.ScalarQueryParameter("status", "STRING", status))
 
+        def any_of(exprs: List[str], template: str) -> str:
+            return "(" + " OR ".join(template.format(e) for e in exprs) + ")"
+
         if repository:
-            where_clauses.append(
-                "LOWER(COALESCE(CAST(repository AS STRING), CAST(repo AS STRING), '')) LIKE LOWER(@repository)"
-            )
+            where_clauses.append(any_of(repo_exprs, "LOWER({}) LIKE LOWER(@repository)"))
             query_params.append(bigquery.ScalarQueryParameter("repository", "STRING", f"%{repository}%"))
 
         if vulnerability_type:
-            where_clauses.append(
-                "(LOWER(CAST(vulnerability_type AS STRING)) LIKE LOWER(@vuln_type) OR "
-                "LOWER(CAST(cwe_id AS STRING)) LIKE LOWER(@vuln_type) OR "
-                "LOWER(CAST(rule_id AS STRING)) LIKE LOWER(@vuln_type))"
-            )
+            where_clauses.append(any_of(vuln_exprs, "LOWER({}) LIKE LOWER(@vuln_type)"))
             query_params.append(bigquery.ScalarQueryParameter("vuln_type", "STRING", f"%{vulnerability_type}%"))
 
         if session_id:
-            where_clauses.append(
-                "(CAST(session_id AS STRING) = @session_id OR CAST(scan_job_id AS STRING) = @session_id)"
-            )
+            where_clauses.append(any_of(session_exprs, "{} = @session_id"))
             query_params.append(bigquery.ScalarQueryParameter("session_id", "STRING", session_id))
 
         if search_query:
-            where_clauses.append(
-                "(LOWER(CAST(title AS STRING)) LIKE LOWER(@search) OR "
-                "LOWER(CAST(description AS STRING)) LIKE LOWER(@search) OR "
-                "LOWER(CAST(message AS STRING)) LIKE LOWER(@search) OR "
-                "LOWER(CAST(file_path AS STRING)) LIKE LOWER(@search))"
-            )
+            where_clauses.append(any_of(search_exprs, "LOWER({}) LIKE LOWER(@search)"))
             query_params.append(bigquery.ScalarQueryParameter("search", "STRING", f"%{search_query}%"))
 
         if start_date:
@@ -214,7 +288,7 @@ class BigQueryService:
             # Execute data query
             data_job_config = bigquery.QueryJobConfig(query_parameters=query_params_with_paging)
             data_job = self.client.query(data_sql, job_config=data_job_config)
-            rows = [serialize_row(row) for row in data_job.result()]
+            rows = [serialize_finding(row) for row in data_job.result()]
 
             return {
                 "total_issues": total_count,
@@ -243,12 +317,18 @@ class BigQueryService:
         tb = table or self.table
         target_table = f"`{self.client.project}.{ds}.{tb}`"
 
-        # Look up by finding_id or issue_id
+        # Look up by whichever ID column(s) the table has (finding_id for cm_find output).
+        try:
+            id_exprs = self._field_exprs("id", self._table_columns(ds, tb))
+        except NotFound:
+            return {"error": f"Table {target_table} does not exist."}
+        except SchemaMismatchError as e:
+            return {"error": str(e)}
+        id_match = " OR ".join(f"{e} = @issue_id" for e in id_exprs)
         sql = f"""
             SELECT *
             FROM {target_table}
-            WHERE CAST(finding_id AS STRING) = @issue_id
-               OR CAST(issue_id AS STRING) = @issue_id
+            WHERE {id_match}
             LIMIT 1
         """
         job_config = bigquery.QueryJobConfig(
@@ -260,7 +340,7 @@ class BigQueryService:
             results = list(job.result())
             if not results:
                 return {"error": f"Issue with ID '{issue_id}' not found in {target_table}."}
-            return serialize_row(results[0])
+            return serialize_finding(results[0])
         except NotFound:
             return {"error": f"Table {target_table} does not exist."}
         except Exception as e:
@@ -284,13 +364,25 @@ class BigQueryService:
         ]
         params = [bigquery.ScalarQueryParameter("days", "INT64", max(1, days))]
 
+        try:
+            columns = self._table_columns(ds, tb)
+            repo_exprs = self._field_exprs("repository", columns) if repository else []
+            vuln_exprs = self._field_exprs("vulnerability_type", columns)
+        except NotFound:
+            return {"error": f"Table {target_table} does not exist."}
+        except SchemaMismatchError as e:
+            return {"error": str(e)}
+
         if repository:
             where_clauses.append(
-                "LOWER(COALESCE(CAST(repository AS STRING), CAST(repo AS STRING), '')) LIKE LOWER(@repo)"
+                "(" + " OR ".join(f"LOWER({e}) LIKE LOWER(@repo)" for e in repo_exprs) + ")"
             )
             params.append(bigquery.ScalarQueryParameter("repo", "STRING", f"%{repository}%"))
 
         where_sql = f"WHERE {' AND '.join(where_clauses)}"
+        resolved_sql = ", ".join(f"'{st}'" for st in RESOLVED_STATUSES)
+        not_open_sql = ", ".join(f"'{st}'" for st in NOT_OPEN_STATUSES)
+        vuln_sql = f"COALESCE({', '.join(vuln_exprs)}, 'Unknown')"
 
         sql = f"""
             WITH base AS (
@@ -298,17 +390,24 @@ class BigQueryService:
             )
             SELECT
                 (SELECT COUNT(*) FROM base) AS total_issues,
-                (SELECT COUNTIF(UPPER(CAST(severity AS STRING)) = 'CRITICAL') FROM base) AS critical_count,
-                (SELECT COUNTIF(UPPER(CAST(severity AS STRING)) = 'HIGH') FROM base) AS high_count,
-                (SELECT COUNTIF(UPPER(CAST(severity AS STRING)) = 'MEDIUM') FROM base) AS medium_count,
-                (SELECT COUNTIF(UPPER(CAST(severity AS STRING)) = 'LOW') FROM base) AS low_count,
-                (SELECT COUNTIF(UPPER(CAST(status AS STRING)) IN ('FIXED', 'VERIFIED', 'APPLIED')) FROM base) AS resolved_count,
-                (SELECT COUNTIF(UPPER(CAST(status AS STRING)) NOT IN ('FIXED', 'VERIFIED', 'APPLIED', 'FALSE_POSITIVE')) FROM base) AS open_count
+                (SELECT COUNTIF(UPPER(CAST(status AS STRING)) IN ({resolved_sql})) FROM base) AS resolved_count,
+                (SELECT COUNTIF(UPPER(IFNULL(CAST(status AS STRING), 'OPEN')) NOT IN ({not_open_sql})) FROM base) AS open_count
+        """
+
+        # Rows stored with a raw SARIF level (ERROR / WARNING / NOTE) are counted
+        # under the severity they map to.
+        severity_counts_sql = f"""
+            SELECT
+                IFNULL(NULLIF({severity_sql()}, ''), 'UNKNOWN') AS severity,
+                COUNT(*) AS count
+            FROM {target_table}
+            {where_sql}
+            GROUP BY 1
         """
 
         top_vulns_sql = f"""
             SELECT
-                COALESCE(CAST(vulnerability_type AS STRING), CAST(cwe_id AS STRING), CAST(rule_id AS STRING), 'Unknown') AS vuln_type,
+                {vuln_sql} AS vuln_type,
                 COUNT(*) AS count
             FROM {target_table}
             {where_sql}
@@ -323,7 +422,12 @@ class BigQueryService:
             if not summary_res_list:
                 return {"error": "No data returned for summary."}
             summary_res = summary_res_list[0]
+            severity_res = list(self.client.query(severity_counts_sql, job_config=job_config).result())
             top_vulns_res = list(self.client.query(top_vulns_sql, job_config=job_config).result())
+
+            severity_breakdown: Dict[str, int] = {sev: 0 for sev in SEVERITIES}
+            for row in severity_res:
+                severity_breakdown[str(row["severity"])] = int(row["count"])
 
             return {
                 "period_days": days,
@@ -331,12 +435,7 @@ class BigQueryService:
                 "total_issues": summary_res["total_issues"],
                 "open_issues": summary_res["open_count"],
                 "resolved_issues": summary_res["resolved_count"],
-                "severity_breakdown": {
-                    "CRITICAL": summary_res["critical_count"],
-                    "HIGH": summary_res["high_count"],
-                    "MEDIUM": summary_res["medium_count"],
-                    "LOW": summary_res["low_count"],
-                },
+                "severity_breakdown": severity_breakdown,
                 "top_vulnerabilities": [
                     {"type": row["vuln_type"], "count": row["count"]} for row in top_vulns_res
                 ],

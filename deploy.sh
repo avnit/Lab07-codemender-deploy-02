@@ -71,7 +71,6 @@ Environment (all optional; also read from codemender-mcp/.env, or $ENV_FILE)
   PROJECT_ID / GCP_PROJECT_ID, REGION
   GITHUB_TOKEN                Stored in Secret Manager, never as a plain env var.
                               Never prompted for. Omit for public-repo scanning.
-  WIZ_CLIENT_ID, WIZ_CLIENT_SECRET, WIZ_API_ENDPOINT   Enable Wiz tools (codemender-mcp)
   BQ_DATASET (codemender), BQ_TABLE (findings), BQ_LOCATION (US)
   CM_REPORTS_BUCKET           Transit bucket (default: codemender-reports-<project>)
   INVOKER_MEMBERS             Comma-separated IAM members granted roles/run.invoker
@@ -85,8 +84,7 @@ EOF
 # load_env_file FILE -- read KEY=VALUE pairs for an allowlist of keys. The file
 # is parsed, never sourced, and values already present in the environment win.
 ENV_KEYS=" GCP_PROJECT_ID PROJECT_ID REGION BQ_DATASET BQ_TABLE BQ_LOCATION LOG_NAME_FILTER \
-CM_RUNNER_JOB_NAME CM_REPORTS_BUCKET CM_DEFAULT_PATCH_MODE GITHUB_TOKEN GITHUB_API_URL \
-WIZ_CLIENT_ID WIZ_CLIENT_SECRET WIZ_API_ENDPOINT WIZ_AUTH_URL WIZ_AUDIENCE "
+CM_RUNNER_JOB_NAME CM_REPORTS_BUCKET CM_DEFAULT_PATCH_MODE GITHUB_TOKEN GITHUB_API_URL "
 load_env_file() {
   local file="$1" line key val
   [[ -f "$file" ]] || return 0
@@ -171,12 +169,6 @@ GITHUB_TOKEN="${GITHUB_TOKEN:-}"
 GITHUB_API_URL="${GITHUB_API_URL:-https://api.github.com}"
 GITHUB_SECRET="${GITHUB_SECRET:-codemender-github-token}"
 AUTH_SECRET="${AUTH_SECRET:-codemender-mcp-auth-token}"
-WIZ_CLIENT_ID="${WIZ_CLIENT_ID:-}"
-WIZ_CLIENT_SECRET="${WIZ_CLIENT_SECRET:-}"
-WIZ_API_ENDPOINT="${WIZ_API_ENDPOINT:-}"
-WIZ_AUTH_URL="${WIZ_AUTH_URL:-https://auth.app.wiz.io/oauth/token}"
-WIZ_AUDIENCE="${WIZ_AUDIENCE:-wiz-api}"
-WIZ_SECRET="${WIZ_SECRET:-wiz-client-secret}"
 RUNNER_TIMEOUT="${RUNNER_TIMEOUT:-10800s}"
 RUNNER_CPU="${RUNNER_CPU:-2}"
 RUNNER_MEMORY="${RUNNER_MEMORY:-8Gi}"
@@ -461,19 +453,6 @@ else
   warn "private repos and fix branches/PRs need one. Re-run with GITHUB_TOKEN=... to add it."
 fi
 
-WIZ_ENABLED=false
-if $DEPLOY_MCP; then
-  if [[ -n "$WIZ_CLIENT_ID" && -n "$WIZ_CLIENT_SECRET" && -n "$WIZ_API_ENDPOINT" ]]; then
-    put_secret "$WIZ_SECRET" "$WIZ_CLIENT_SECRET"
-    grant_secret "$MCP_SA" "$WIZ_SECRET"
-    MCP_SECRETS+=("WIZ_CLIENT_SECRET=${WIZ_SECRET}:latest")
-    WIZ_ENABLED=true
-    ok "Wiz integration enabled (${WIZ_API_ENDPOINT})"
-  else
-    info "Wiz integration not configured (set WIZ_CLIENT_ID, WIZ_CLIENT_SECRET, WIZ_API_ENDPOINT to enable)"
-  fi
-fi
-
 # The runner MCP's static bearer token replaces IAM in public mode only: behind
 # IAM the Authorization header carries the caller's identity token instead.
 if $DEPLOY_RUNNER_MCP && [[ "$ALLOW_UNAUTHENTICATED" == true ]]; then
@@ -623,9 +602,6 @@ fi
 if $DEPLOY_MCP; then
   grant_job_executor "$MCP_SA"
   MCP_ENV="GCP_PROJECT_ID=${PROJECT_ID},GCP_REGION=${REGION},BQ_DATASET=${BQ_DATASET},BQ_TABLE=${BQ_TABLE},BQ_LOCATION=${BQ_LOCATION},LOG_NAME_FILTER=${LOG_NAME_FILTER},CM_RUNNER_JOB_NAME=${RUNNER_JOB},CM_REPORTS_BUCKET=${BUCKET},CM_DEFAULT_PATCH_MODE=${PATCH_MODE},GITHUB_API_URL=${GITHUB_API_URL}"
-  if $WIZ_ENABLED; then
-    MCP_ENV="${MCP_ENV},WIZ_CLIENT_ID=${WIZ_CLIENT_ID},WIZ_API_ENDPOINT=${WIZ_API_ENDPOINT},WIZ_AUTH_URL=${WIZ_AUTH_URL},WIZ_AUDIENCE=${WIZ_AUDIENCE}"
-  fi
   # Session affinity keeps an SSE client on the instance holding its session.
   deploy_service "$MCP_SERVICE" "$MCP_IMAGE" "$MCP_SA" "$MCP_ENV" \
     "$(join_by_comma ${MCP_SECRETS[@]+"${MCP_SECRETS[@]}"})" \

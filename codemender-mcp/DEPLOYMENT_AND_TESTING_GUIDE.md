@@ -1,6 +1,6 @@
 # Code Mender Security MCP Server — Deployment & Testing Guide
 
-This guide provides step-by-step instructions to deploy, configure, and validate the **Code Mender Security MCP Server** on **Google Cloud Run**, connect it to **BigQuery**, **Cloud Logging**, **Cloud Run Jobs**, and **Wiz**, and integrate it with **Gemini Enterprise**, **Claude Desktop**, **Cursor**, or **Jetski**.
+This guide provides step-by-step instructions to deploy, configure, and validate the **Code Mender Security MCP Server** on **Google Cloud Run**, connect it to **BigQuery**, **Cloud Logging**, and **Cloud Run Jobs**, and integrate it with **Gemini Enterprise**, **Claude Desktop**, **Cursor**, or **Jetski**.
 
 ---
 
@@ -19,12 +19,10 @@ flowchart LR
         RS["Runner Service"]
         BQS["BigQuery Service"]
         LS["Cloud Logging Service"]
-        WS["Wiz Service"]
         MW --> MCP
         MCP --> RS
         MCP --> BQS
         MCP --> LS
-        MCP --> WS
     end
 
     subgraph Execution["Ephemeral Scan & Fix Execution"]
@@ -40,25 +38,22 @@ flowchart LR
     subgraph DataPlane["Security Data & Telemetry Plane"]
         BQ[("BigQuery\n(codemender.findings)")]
         CL[("Cloud Logging\n(Sandbox & Job Traces)")]
-        WIZ[("Wiz GraphQL API\n(Cloud Issues)")]
         RS -->|5. Ingest Findings & Patches| BQ
         BQS -->|Parameterized Read Queries| BQ
         LS -->|Log Filter Queries| CL
-        WS -->|OAuth 2.0 Client Credentials| WIZ
     end
 
     GE -->|HTTPS POST /mcp| MW
     CD -->|HTTPS GET /sse| MW
 ```
 
-### Capabilities Overview (18 Tools)
+### Capabilities Overview (14 Tools)
 
 | Category | Tools | Purpose |
 | :--- | :--- | :--- |
 | **Code Mender Execution (Find & Fix)** | `cm_find`, `cm_validate`, `cm_fix`, `cm_apply_patch`, `cm_job_status`, `cm_list_findings`, `cm_get_finding` | Clone repositories, dispatch isolated Cloud Run Jobs to find vulnerabilities, verify exploitability, generate unified diff patches, ingest into BigQuery, and open GitHub PRs. |
 | **BigQuery Findings & Analytics** | `list_codemender_issues`, `get_issue_details`, `get_issues_summary`, `get_bigquery_schema`, `query_codemender_bigquery` | Filter findings by severity/CWE/repo, inspect remediation patches, compute executive summaries, and run read-only SQL queries. |
 | **Cloud Logging Diagnostics** | `get_issue_logs`, `search_codemender_logs` | Correlate finding IDs and session IDs with compiler outputs, sandbox violations, and execution trace logs. |
-| **Wiz Cloud Security** | `list_wiz_issues`, `get_wiz_issue_details`, `get_wiz_issues_summary`, `query_wiz_graphql` | Query cloud posture issues, toxic combinations, and threat detections alongside code vulnerabilities. |
 
 ---
 
@@ -72,12 +67,11 @@ Before deploying, ensure you have:
    - `roles/iam.serviceAccountAdmin`
    - `roles/resourcemanager.projectIamAdmin`
    - `roles/cloudbuild.builds.editor`
-   - `roles/secretmanager.admin` (if using `GITHUB_TOKEN` or Wiz credentials)
+   - `roles/secretmanager.admin` (if using `GITHUB_TOKEN`)
    - `roles/bigquery.admin`
    - `roles/storage.admin`
 4. **Optional Credentials**:
    - **GitHub Personal Access Token (`GITHUB_TOKEN`)**: Classic token with `repo` scope (or fine-grained token with `Contents: Read & Write` and `Pull requests: Read & Write`) to allow `cm_fix` to push branches and open PRs.
-   - **Wiz Service Account (`WIZ_CLIENT_ID`, `WIZ_CLIENT_SECRET`, `WIZ_API_ENDPOINT`)**: With `read:issues` scope for Wiz tools.
 
 ---
 
@@ -139,11 +133,6 @@ GITHUB_TOKEN=ghp_your_github_token_here
 GITHUB_API_URL=https://api.github.com
 GIT_AUTHOR_NAME=CodeMender
 GIT_AUTHOR_EMAIL=codemender-bot@users.noreply.github.com
-
-# --- Wiz (Optional - leave blank if not using Wiz) ---
-WIZ_CLIENT_ID=
-WIZ_CLIENT_SECRET=
-WIZ_API_ENDPOINT=https://api.us17.app.wiz.io/graphql
 ```
 
 ---
@@ -205,7 +194,6 @@ curl -s -H "Authorization: Bearer ${TOKEN}" "${SERVICE_URL}/healthz" | jq
 #   "project": "your-gcp-project-id",
 #   "dataset": "codemender",
 #   "table": "findings",
-#   "wiz_configured": false,
 #   "runner_configured": true
 # }
 
@@ -408,7 +396,7 @@ Then point your local MCP client to `http://localhost:8080/sse` (or `http://loca
 
 ## 7. Running Local Development & Unit Tests
 
-To run the test suite locally (295 unit tests covering SARIF parsing, git snapshotting, BigQuery store, Wiz client, and FastMCP HTTP routes):
+To run the test suite locally (302 unit tests covering SARIF parsing, git snapshotting, BigQuery store, and FastMCP HTTP routes):
 
 ```bash
 python3 -m venv .venv

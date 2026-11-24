@@ -155,7 +155,9 @@ class TestFind(ServiceTestBase):
     view = self._scan("main")
     self.assertEqual(view["status"], "SUCCEEDED")
     self.assertEqual(view["finding_count"], 2)
-    self.assertEqual(view["result"]["by_severity"], {"ERROR": 1, "WARNING": 1})
+    self.assertEqual(view["result"]["by_severity"], {"HIGH": 1, "MEDIUM": 1})
+    self.assertEqual(sorted(f["severity"] for f in self.store.findings.values()),
+                     ["HIGH", "MEDIUM"])
     self.assertEqual(self.git.clones, [("acme/widgets", "main")])
     command, manifest_arg = self.dispatcher.calls[0]
     self.assertEqual(command, "find-full")

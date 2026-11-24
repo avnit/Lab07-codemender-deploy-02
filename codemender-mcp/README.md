@@ -1,6 +1,6 @@
 # Code Mender Triage MCP Server (GCP Cloud Run)
 
-A Model Context Protocol (MCP) server running on **Google Cloud Run** to inspect, query, and triage security findings published by **Code Mender** to **BigQuery**, correlated with execution, sandbox, and diagnostic traces from **Cloud Logging**. It also serves cloud security issues from **Wiz** through the same MCP endpoint.
+A Model Context Protocol (MCP) server running on **Google Cloud Run** to inspect, query, and triage security findings published by **Code Mender** to **BigQuery**, correlated with execution, sandbox, and diagnostic traces from **Cloud Logging**.
 
 ---
 
@@ -18,21 +18,14 @@ flowchart LR
         R["Runner Service (find, validate, fix)"]
         D["BigQuery Service"]
         E["Cloud Logging Service"]
-        W["Wiz Service"]
         B --> R
         B --> D
         B --> E
-        B --> W
     end
 
     subgraph Runner["Cloud Run Job (codemender-runner)"]
         J["Ephemeral Job Execution\n(find-full / verify / fix)"]
         R -->|Launch / Watch| J
-    end
-
-    subgraph Wiz["Wiz"]
-        X[("Wiz GraphQL API\n(Issues)")]
-        W -->|OAuth client credentials| X
     end
 
     subgraph GCP["Google Cloud Platform"]
@@ -69,9 +62,14 @@ Launch repository vulnerability scans, exploitability verification, and automate
 - **`cm_get_finding`**: Get full finding details including vulnerability fingerprint, CWE/OWASP metadata, unified diff patch, verification verdict, and PR link.
 
 ### 2. BigQuery Inspection (Code Mender Findings)
-- **`list_codemender_issues`**: Query and filter security issues published by Code Mender. Filter by severity (`CRITICAL`, `HIGH`, etc.), status (`DETECTED`, `PATCH_GENERATED`, `VERIFIED`, `FIXED`, `FAILED`), repository, vulnerability type / CWE, date range, or text search.
+- **`list_codemender_issues`**: Query and filter security issues published by Code Mender. Filter by severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`), status (`OPEN`, `VERIFIED`, `FALSE_POSITIVE`, `INCONCLUSIVE`, `FIXED`, `PATCHED`), repository (`repo`), rule ID / vulnerability type (`rule_id`), scan job (`scan_job_id`), date range, or text search over `message`, `file_path` and `rule_id`.
 - **`get_issue_details`**: Fetch full details for a specific issue ID / finding ID, including code snippets, generated patches / diffs, verification results, and remediation status.
 - **`get_issues_summary`**: High-level aggregated statistics: total findings, open vs. resolved counts, severity breakdown, and top 5 recurring vulnerabilities.
+
+These tools read the `findings` table that `cm_find` writes (schema: `FINDING_SCHEMA` in `services/runner/store.py`). Column names are resolved from the live table, so a table using the older issue-style names (`issue_id`, `repository`, `vulnerability_type`, `cwe_id`, `session_id`, `title`, `description`) is also readable. `VERIFIED` means a finding was confirmed exploitable; only `FIXED` and `PATCHED` count as resolved.
+
+**Severity mapping.** `cm_find` stores `CRITICAL`, `HIGH`, `MEDIUM` or `LOW` (`services/severity.py`). When the SARIF rule or result carries a `security-severity` score, that decides: 9.0–10.0 `CRITICAL`, 7.0–8.9 `HIGH`, 4.0–6.9 `MEDIUM`, below 4.0 `LOW`. Otherwise the SARIF level decides: `error` → `HIGH`, `warning` → `MEDIUM`, `note`/`none` → `LOW`. Rows stored earlier with the raw level are mapped the same way when read, with the stored value returned as `sarif_level`.
+
 - **`get_bigquery_schema`**: Inspect BigQuery table schemas, columns, types, and descriptions to guide custom queries.
 - **`query_codemender_bigquery`**: Execute safe, parameterized, read-only SQL queries (`SELECT` and `WITH` statements only).
 
@@ -79,18 +77,9 @@ Launch repository vulnerability scans, exploitability verification, and automate
 - **`get_issue_logs`**: Automatically correlates logs with a specific finding ID or Code Mender `session_id`. Retrieves compiler output, sandbox execution traces, and error logs.
 - **`search_codemender_logs`**: Search Cloud Logging across Code Mender jobs and workers for exceptions, sandbox policy violations (e.g., blocked commands), or scan failures.
 
-### 4. Wiz Issues (Cloud Security Findings)
-Read-only access to Wiz issues through the Wiz GraphQL API. Requires a Wiz service account (see [Wiz Setup](#wiz-setup)). If Wiz isn't configured, these tools return an error and the rest of the server works as normal.
-- **`list_wiz_issues`**: List issues, newest first. Filter by severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFORMATIONAL`), status (`OPEN`, `IN_PROGRESS`, `RESOLVED`, `REJECTED`), type (`TOXIC_COMBINATION`, `THREAT_DETECTION`, `CLOUD_CONFIGURATION`), project, text search, date range, or affected resource. Supports cursor pagination.
-- **`get_wiz_issue_details`**: Full details for one issue: source rule/control with remediation guidance, affected cloud resource, projects, linked tickets, and notes.
-- **`get_wiz_issues_summary`**: Issue counts by severity (open and in-progress by default), with an optional lookback window.
-- **`query_wiz_graphql`**: Run any read-only Wiz GraphQL query. Mutations and subscriptions are rejected.
-
-### 5. MCP Resources & Prompts
+### 4. MCP Resources & Prompts
 - **Resource `codemender://schema`**: BigQuery schema representation of the findings table.
 - **Resource `codemender://critical-issues`**: Live list of the most recent critical findings.
-- **Resource `wiz://critical-issues`**: Latest open critical issues from Wiz.
-- **Prompt `triage_wiz_issue`**: Triage a Wiz issue: fetch its details, check Code Mender for related findings, and recommend remediation.
 - **Prompt `triage_issue`**: Automated investigation prompt guiding the LLM to inspect the issue in BigQuery, fetch correlated logs, review the patch diff, and recommend next actions.
 - **Prompt `diagnose_remediation_failure`**: Automated prompt guiding the LLM to diagnose why a Code Mender patch or verification run failed.
 
@@ -100,7 +89,7 @@ Read-only access to Wiz issues through the Wiz GraphQL API. Requires a Wiz servi
 
 ```
 .
-├── .env.example               # Configuration template: copy to .env and fill in (GCP, Runner, Wiz)
+├── .env.example               # Configuration template: copy to .env and fill in (GCP, Runner)
 ├── config.py                  # Pydantic settings loaded from .env / environment variables
 ├── server.py                  # FastMCP server with tools, resources, and Cloud Run routes
 ├── codemender/                # Core CodeMender SARIF 2.1.0 parsing, models, and fingerprinting
@@ -108,7 +97,6 @@ Read-only access to Wiz issues through the Wiz GraphQL API. Requires a Wiz servi
 │   ├── __init__.py
 │   ├── bigquery_service.py    # BigQuery client, parameterized queries, and serialization
 │   ├── logging_service.py     # Cloud Logging client, filter generation, and formatting
-│   ├── wiz_service.py         # Wiz GraphQL client: OAuth token caching, issue queries
 │   ├── runner_service.py      # Runner service manager & lifecycle wrapper
 │   └── runner/                # CodeMender execution engine (Cloud Run Jobs, GCS transit, git/PRs)
 │       ├── cloud.py           # Cloud Run Jobs client & GCS transit bucket manager
@@ -118,7 +106,7 @@ Read-only access to Wiz issues through the Wiz GraphQL API. Requires a Wiz servi
 │       └── store.py           # BigQueryStore & InMemoryStore for findings and execution jobs
 ├── tests/
 │   ├── __init__.py
-│   └── test_server.py         # Unit tests with mocks for BigQuery, Logging, Wiz, and Runner tools
+│   └── test_server.py         # Unit tests with mocks for BigQuery, Logging, and Runner tools
 ├── Dockerfile                 # Multi-stage, secure non-root Dockerfile for Cloud Run (git installed)
 ├── .dockerignore              # Clean container build context
 ├── requirements.txt           # Python dependencies (mcp, google-cloud-*, uvicorn, requests, etc.)
@@ -131,7 +119,7 @@ Read-only access to Wiz issues through the Wiz GraphQL API. Requires a Wiz servi
 
 ## Configuration
 
-All settings, including the Wiz client ID and secret, live in one file: `.env`.
+All settings live in one file: `.env`.
 
 ```bash
 cp .env.example .env
@@ -139,11 +127,11 @@ cp .env.example .env
 ```
 
 - **Local runs:** `config.py` reads `.env` automatically.
-- **Cloud Run:** `deploy_cloud_run.sh` reads the same `.env` and passes the values to the service. `WIZ_CLIENT_SECRET` is stored in Secret Manager and mounted into the service; it is not set as a plain environment variable.
+- **Cloud Run:** `deploy_cloud_run.sh` reads the same `.env` and passes the values to the service. `GITHUB_TOKEN` is stored in Secret Manager and mounted into the service; it is not set as a plain environment variable.
 - **Secrets stay out of git and the image:** `.env` is listed in `.gitignore` and `.dockerignore`. Commit `.env.example` only, with placeholder values.
 - **Precedence:** environment variables already set in your shell override `.env` for local runs; CLI flags override `.env` for `deploy_cloud_run.sh`.
 
-To change a value later (for example, rotating the Wiz secret), edit `.env` and restart the server locally or re-run `./deploy_cloud_run.sh`. The deploy script adds a new secret version only when the value has changed.
+To change a value later (for example, rotating the GitHub token), edit `.env` and restart the server locally or re-run `./deploy_cloud_run.sh`. The deploy script adds a new secret version only when the value has changed.
 
 | Variable | Description | Default |
 | :--- | :--- | :--- |
@@ -160,24 +148,8 @@ To change a value later (for example, rotating the Wiz secret), edit `.env` and 
 | `GITHUB_API_URL` | GitHub REST API base URL | `https://api.github.com` |
 | `GIT_AUTHOR_NAME` | Commit author name for auto-fix branches | `CodeMender` |
 | `GIT_AUTHOR_EMAIL` | Commit author email for auto-fix branches | `codemender-bot@users.noreply.github.com` |
-| `WIZ_CLIENT_ID` | Wiz service account client ID | _(empty: Wiz disabled)_ |
-| `WIZ_CLIENT_SECRET` | Wiz service account client secret | _(empty: Wiz disabled)_ |
-| `WIZ_API_ENDPOINT` | Your tenant's Wiz GraphQL endpoint, e.g. `https://api.us17.app.wiz.io/graphql` | _(empty: Wiz disabled)_ |
-| `WIZ_AUTH_URL` | Wiz OAuth token URL | `https://auth.app.wiz.io/oauth/token` |
-| `WIZ_AUDIENCE` | Wiz OAuth audience | `wiz-api` |
-| `WIZ_SECRET_NAME` | Secret Manager secret name for the Wiz client secret (deploy script only) | `wiz-client-secret` |
 | `PORT` | HTTP port to listen on (injected by Cloud Run) | `8080` |
 | `HOST` | Host address to bind | `0.0.0.0` |
-
-Wiz is enabled only when `WIZ_CLIENT_ID`, `WIZ_CLIENT_SECRET`, and `WIZ_API_ENDPOINT` are all set. The `/healthz` response includes `"wiz_configured": true|false` so you can confirm it.
-
-### Wiz Setup
-
-1. In the Wiz portal, go to **Settings > Access Management > Service Accounts** and create a service account of type **Custom Integration (GraphQL API)**.
-2. Grant it the **`read:issues`** permission. Add other `read:*` scopes only if you plan to use `query_wiz_graphql` for other data (e.g. `read:resources`, `read:vulnerabilities`).
-3. Copy the **Client ID** and **Client Secret** into `.env` as `WIZ_CLIENT_ID` and `WIZ_CLIENT_SECRET`. Wiz shows the secret only once.
-4. Find your tenant's API endpoint under **User Settings > Tenant Info** (for example `https://api.us17.app.wiz.io/graphql`) and set it as `WIZ_API_ENDPOINT`.
-5. If your tenant uses a different auth endpoint (e.g. FedRAMP or a legacy Cognito tenant), set `WIZ_AUTH_URL` and `WIZ_AUDIENCE` to the values Wiz gives you.
 
 ---
 
@@ -194,7 +166,7 @@ pip install -r requirements.txt
 ```bash
 cp .env.example .env
 ```
-Edit `.env` and set `GCP_PROJECT_ID`, and the `WIZ_*` values if you want Wiz issues (see [Wiz Setup](#wiz-setup)).
+Edit `.env` and set `GCP_PROJECT_ID`.
 
 ### 3. Authenticate with Google Cloud
 Ensure Application Default Credentials (ADC) are configured:
@@ -234,13 +206,7 @@ The provided [`deploy_cloud_run.sh`](file:///usr/local/google/home/abambah/l400-
    - `roles/run.developer` (triggers `codemender-runner` Cloud Run Job executions)
 4. Re-enables the Default Compute Service Account if disabled for Cloud Build, builds the container image from [`Dockerfile`](file:///usr/local/google/home/abambah/l400-security-labs/Dockerfile), and deploys to Cloud Run.
 
-The script reads `.env` first, so once that file is filled in you don't need any flags. If the `WIZ_*` values are set, it also:
-- enables the Secret Manager API,
-- stores `WIZ_CLIENT_SECRET` in the secret named by `WIZ_SECRET_NAME` (creating it, or adding a new version if the value changed),
-- grants the runtime service account `roles/secretmanager.secretAccessor` on that secret,
-- passes `WIZ_CLIENT_ID`, `WIZ_API_ENDPOINT`, `WIZ_AUTH_URL`, and `WIZ_AUDIENCE` as environment variables and mounts the secret as `WIZ_CLIENT_SECRET`.
-
-If the `WIZ_*` values are empty, Wiz setup is skipped.
+The script reads `.env` first, so once that file is filled in you don't need any flags.
 
 #### Basic Run (uses `.env`):
 ```bash
@@ -273,7 +239,7 @@ ENV_FILE=.env.prod ./deploy_cloud_run.sh
 - `--allow-unauthenticated`: Permit unauthenticated calls (default: require IAM auth).
 - `-h, --help`: Display usage guide.
 
-Flags override values from `.env`. Wiz settings have no flags; set them in `.env`.
+Flags override values from `.env`.
 
 ---
 
@@ -319,32 +285,6 @@ gcloud run deploy "${SERVICE_NAME}" \
   --set-env-vars="GCP_PROJECT_ID=${PROJECT_ID},BQ_DATASET=codemender,BQ_TABLE=findings" \
   --no-allow-unauthenticated
 ```
-
-#### Optional: Enable Wiz in a Manual Deployment
-```bash
-# Load WIZ_* values from your config file
-set -a; source .env; set +a
-
-# 1. Store the Wiz client secret in Secret Manager
-gcloud services enable secretmanager.googleapis.com --project="${PROJECT_ID}"
-printf '%s' "${WIZ_CLIENT_SECRET}" | gcloud secrets create wiz-client-secret \
-  --data-file=- --replication-policy=automatic --project="${PROJECT_ID}"
-
-# 2. Let the runtime service account read it
-gcloud secrets add-iam-policy-binding wiz-client-secret \
-  --member="serviceAccount:${SA_EMAIL}" \
-  --role="roles/secretmanager.secretAccessor" \
-  --project="${PROJECT_ID}"
-
-# 3. Add the Wiz settings to the service
-gcloud run services update "${SERVICE_NAME}" \
-  --project="${PROJECT_ID}" \
-  --region="${REGION}" \
-  --update-env-vars="WIZ_CLIENT_ID=${WIZ_CLIENT_ID},WIZ_API_ENDPOINT=${WIZ_API_ENDPOINT}" \
-  --set-secrets="WIZ_CLIENT_SECRET=wiz-client-secret:latest"
-```
-
-> **Note:** `cloudbuild.yaml` does not read `.env` or configure Wiz. If you deploy through Cloud Build, run the three Wiz steps above once. The pipeline uses `--update-env-vars`, so later deploys keep the Wiz env vars and the secret mount.
 
 ---
 
@@ -437,30 +377,6 @@ Configure the MCP server:
   "arguments": {
     "issue_id": "FINDING-2026-9812",
     "min_severity": "WARNING"
-  }
-}
-```
-
-### 4. List Open Critical and High Wiz Issues
-```json
-{
-  "name": "list_wiz_issues",
-  "arguments": {
-    "severity": "CRITICAL,HIGH",
-    "status": "OPEN,IN_PROGRESS",
-    "issue_type": "TOXIC_COMBINATION",
-    "limit": 20
-  }
-}
-```
-Pass the returned `next_cursor` as `cursor` to get the next page.
-
-### 5. Get Wiz Issue Details
-```json
-{
-  "name": "get_wiz_issue_details",
-  "arguments": {
-    "issue_id": "<wiz-issue-id>"
   }
 }
 ```

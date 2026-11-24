@@ -36,6 +36,7 @@ from services.runner.cloud import JobDispatcher, Transit
 from services.runner.repo import GitClient, GitHubClient, RepoError, RepoRef, package_snapshot
 from services.runner.settings import PATCH_MODES, Settings
 from services.runner.store import Store, utc_now
+from services.severity import severity_for_finding
 
 logger = logging.getLogger(__name__)
 
@@ -331,6 +332,9 @@ class CodeMenderService:
       return
     doc = sarif.SarifDocument.from_json(outputs["sarif"].decode("utf-8"))
     findings = doc.to_findings()
+    # CRITICAL / HIGH / MEDIUM / LOW, from the rule's security-severity score
+    # when cm provides one, otherwise from the SARIF level.
+    severities = [severity_for_finding(f.document, f.level) for f in findings]
     if not self.store.list_findings(scan_job_id=job_id, limit=1):  # idempotent
       now = utc_now()
       scan_key = job_id.split("-", 1)[-1]
@@ -348,7 +352,7 @@ class CodeMenderService:
           "fingerprint": f.finding_id,
           "rule_id": f.rule_id,
           "vulnerability_type": f.rule_id,
-          "severity": f.severity,
+          "severity": severity,
           "title": f.message,
           "message": f.message,
           "file_path": f.file_path,
@@ -359,9 +363,9 @@ class CodeMenderService:
           "sarif": json.dumps(f.document),
           "created_at": now,
           "updated_at": now,
-      } for f in findings]
+      } for f, severity in zip(findings, severities)]
       self.store.insert_findings(rows)
-    by_severity = collections.Counter(f.severity or "UNKNOWN" for f in findings)
+    by_severity = collections.Counter(severities)
     self._succeed(job_id, {"finding_count": len(findings),
                            "by_severity": dict(by_severity),
                            "report_uri": (receipt.get("artifacts") or {}).get("report", "")},
